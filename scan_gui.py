@@ -40,6 +40,9 @@ class ScannerApp(tk.Tk):
         ("open_time", "初盘时间", 74),
         ("cur_time", "即时时间", 74),
         ("c2cur", "皇冠即时", 92),
+        ("spfopen", "平博胜平负初", 112),
+        ("spfcur", "平博胜平负即", 112),
+        ("spfc3cur", "皇冠胜平负即", 112),
         ("note", "备注", 110),
     ]
 
@@ -52,7 +55,7 @@ class ScannerApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("大小球变盘扫描器 - 会员版 (数据源: 程序猿：小虾米)")
-        self.geometry("1280x760")
+        self.geometry("1620x820")
         self.running = False
         self.worker = None
         self.events = queue.Queue()
@@ -264,6 +267,9 @@ class ScannerApp(tk.Tk):
                     sc.fmt_odds(
                         r.get("c2_cur_line"), r.get("c2_cur_big"), r.get("c2_cur_small")
                     ),
+                    sc.fmt_spf(r.get("spf_pin_open")),
+                    sc.fmt_spf(r.get("spf_pin_cur")),
+                    sc.fmt_spf(r.get("spf_crown_cur")),
                     note_txt,
                 ),
                 tags=(tag,),
@@ -410,7 +416,7 @@ class ScannerApp(tk.Tk):
                 [
                     "联赛", "开赛", "主队", "客队", "ID",
                     "主公司初盘", "主公司即时", "盘差", "初盘时间", "即时时间",
-                    "皇冠即时", "备注",
+                    "皇冠即时", "平博胜平负初", "平博胜平负即", "皇冠胜平负即", "备注",
                 ]
             )
             for r in self.last_rows:
@@ -424,6 +430,9 @@ class ScannerApp(tk.Tk):
                         sc.fmt_odds(
                             r.get("c2_cur_line"), r.get("c2_cur_big"), r.get("c2_cur_small")
                         ),
+                        sc.fmt_spf(r.get("spf_pin_open")),
+                        sc.fmt_spf(r.get("spf_pin_cur")),
+                        sc.fmt_spf(r.get("spf_crown_cur")),
                         self.notes.get(str(r["sid"]), "")
                         or (
                             f"平{sc.fmt_line(r.get('cur_line'))}≠皇{sc.fmt_line(r.get('c2_cur_line'))}"

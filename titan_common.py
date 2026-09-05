@@ -26,6 +26,7 @@ CHANGE_URL = (
     "https://vip.titan007.com/changeDetail/overunder.aspx"
     "?id={sid}&companyID={cid}&l=0"
 )
+SPF_DATA_URL = "https://1x2d.titan007.com/{sid}.js?r=007"
 HOME_URL = "https://www.titan007.com/"
 
 LINE_RE = re.compile(r"([\d.]+(?:/[\d.]+)?)")
@@ -279,6 +280,42 @@ def parse_company_detail(html):
 
 def fetch_company_ou_detail(sid, cid=1, timeout=20):
     return parse_company_detail(fetch_text(CHANGE_URL.format(sid=sid, cid=cid), timeout=timeout))
+
+
+def fetch_spf_rows(sid, timeout=25):
+    """Parse European odds (胜平负) rows from the per-match JS data file.
+    Entry fields (pipe separated):
+      0 cid | 2 English name | 3-5 open H/D/A | 10-12 current H/D/A | 21 short name
+    """
+    text = fetch_text(SPF_DATA_URL.format(sid=sid), timeout=timeout)
+    a = text.find("var game=Array(")
+    if a < 0:
+        return []
+    a += len("var game=Array(")
+    b = text.find(");", a)
+    body = text[a:b] if b > a else text[a:]
+    rows = []
+    for ent in re.findall(r'"((?:[^"\\]|\\.)*)"', body, re.S):
+        p = ent.split("|")
+        if len(p) < 22:
+            continue
+
+        def odds(i):
+            try:
+                return (float(p[i]), float(p[i + 1]), float(p[i + 2]))
+            except (IndexError, TypeError, ValueError):
+                return None
+
+        rows.append(
+            {
+                "cid": p[0],
+                "name": p[2],
+                "short": p[21],
+                "open": odds(3),
+                "cur": odds(10),
+            }
+        )
+    return rows
 
 
 def _f(txt):

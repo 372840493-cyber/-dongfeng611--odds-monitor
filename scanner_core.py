@@ -3,6 +3,7 @@
 
 import concurrent.futures
 import os
+import re
 import sys
 import time
 
@@ -32,6 +33,18 @@ def fmt_odds(line, big, small):
     big_t = f"{big:.2f}" if big is not None else "-"
     small_t = f"{small:.2f}" if small is not None else "-"
     return f"{fmt_line(line)} [{big_t}/{small_t}]"
+
+
+def fmt_spf(o):
+    if not o or len(o) < 3:
+        return "-"
+    vals = []
+    for x in o:
+        try:
+            vals.append(f"{float(x):.2f}")
+        except (TypeError, ValueError):
+            vals.append("-")
+    return "/".join(vals)
 
 
 def fetch_one(match, cid=47, cid2=None, timeout=18):
@@ -76,6 +89,20 @@ def fetch_one(match, cid=47, cid2=None, timeout=18):
             row["c2_error"] = "no-data" if d2 is not None else (
                 f"{type(last2).__name__}: {last2}" if last2 else "fetch-fail"
             )
+    try:
+        srows = t.fetch_spf_rows(match["sid"], timeout=timeout)
+    except Exception as e:
+        row["spf_error"] = f"{type(e).__name__}: {e}"
+        srows = []
+    for s in srows:
+        if str(s["cid"]) in ("177", "545") or re.search(
+            r"Pinnacle|Crown|皇|平", s["name"] + " " + s.get("short", "")
+        ):
+            if str(s["cid"]) == "177" or "Pinnacle" in s["name"]:
+                row["spf_pin_open"] = s["open"]
+                row["spf_pin_cur"] = s["cur"]
+            if str(s["cid"]) == "545" or "Crown" in s["name"]:
+                row["spf_crown_cur"] = s["cur"]
     return row
 
 
