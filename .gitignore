@@ -4,4 +4,5 @@ dist/
 __pycache__/
 *.pyc
 notes.json
+track_history.json
 *.spec
