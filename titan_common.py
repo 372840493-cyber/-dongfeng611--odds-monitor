@@ -3,6 +3,7 @@
 
 import os
 import re
+import socket
 import urllib.request
 
 UA = {
@@ -26,7 +27,25 @@ CHANGE_URL = (
     "https://vip.titan007.com/changeDetail/overunder.aspx"
     "?id={sid}&companyID={cid}&l=0"
 )
+SPF_DATA_URL = "https://1x2d.titan007.com/{sid}.js?r=007"
+AH_CHANGE_URL = (
+    "https://vip.titan007.com/changeDetail/handicap.aspx"
+    "?id={sid}&companyID={cid}&l=0"
+)
 HOME_URL = "https://www.titan007.com/"
+
+AH_MAP = {
+    "平手": 0.0, "平手/半球": 0.25, "半球": 0.5, "半球/一球": 0.75,
+    "一球": 1.0, "一球/球半": 1.25, "球半": 1.5, "球半/两球": 1.75,
+    "两球": 2.0, "两球/两球半": 2.25, "两球半": 2.5,
+    "两球半/三球": 2.75, "三球": 3.0, "三球/三球半": 3.25,
+    "三球半": 3.5, "三球半/四球": 3.75, "四球": 4.0,
+    "受平手": 0.0, "受平手/半球": -0.25, "受半球": -0.5,
+    "受半球/一球": -0.75, "受一球": -1.0, "受一球/球半": -1.25,
+    "受球半": -1.5, "受球半/两球": -1.75, "受两球": -2.0,
+    "受两球/两球半": -2.25, "受两球半": -2.5, "受两球半/三球": -2.75,
+    "受三球": -3.0,
+}
 
 LINE_RE = re.compile(r"([\d.]+(?:/[\d.]+)?)")
 
@@ -42,8 +61,53 @@ def _decode(raw):
 
 def fetch_text(url, timeout=25):
     req = urllib.request.Request(url, headers=UA)
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return _decode(r.read())
+    last_err = None
+    proxies = urllib.request.getproxies()
+    if proxies:
+        attempts = (("default", timeout), ("direct", timeout))
+    else:
+        attempts = [("direct", min(timeout, 8))]
+        if _proxy_alive():
+            attempts.append(("proxy7890", min(timeout, 8)))
+    for mode, tmo in attempts:
+        try:
+            if mode == "default":
+                resp = urllib.request.urlopen(req, timeout=timeout)
+            elif mode == "direct":
+                opener = urllib.request.build_opener(
+                    urllib.request.ProxyHandler({})
+                )
+                resp = opener.open(req, timeout=tmo)
+            else:
+                opener = urllib.request.build_opener(
+                    urllib.request.ProxyHandler(
+                        {
+                            "http": "http://127.0.0.1:7890",
+                            "https": "http://127.0.0.1:7890",
+                        }
+                    )
+                )
+                resp = opener.open(req, timeout=tmo)
+            with resp as r:
+                return _decode(r.read())
+        except Exception as e:
+            last_err = e
+            msg = str(e)
+            if mode == "default" and not any(
+                k in msg
+                for k in ("refused", "timed out", "Timeout", "EOF", "10061")
+            ):
+                break
+    raise last_err
+
+
+def _proxy_alive():
+    try:
+        s = socket.create_connection(("127.0.0.1", 7890), timeout=0.4)
+        s.close()
+        return True
+    except OSError:
+        return False
 
 
 def fetch_ids():
@@ -155,6 +219,19 @@ def parse_line(txt):
     return None
 
 
+def parse_ah_line(txt):
+    txt = (txt or "").replace(" ", "")
+    if not txt:
+        return None
+    if txt in AH_MAP:
+        return AH_MAP[txt]
+    m = re.match(r"^受(.+)$", txt)
+    if m and m.group(1) in AH_MAP:
+        v = AH_MAP[m.group(1)]
+        return -v if v != 0 else 0.0
+    return parse_line(txt)
+
+
 def line_diff(a, b):
     if a is None or b is None:
         return None
@@ -254,6 +331,8 @@ def parse_company_detail(html):
                 "big": big,
                 "line": line,
                 "small": small,
+                "minute": vals[0],
+                "score": vals[1],
                 "time": vals[5],
                 "status": re.sub(r"<[^>]+>", "", tds[6]).strip()
                 if len(tds) > 6
@@ -272,6 +351,8 @@ def parse_company_detail(html):
         "cur_big": cur["big"],
         "cur_line": cur["line"],
         "cur_small": cur["small"],
+        "cur_minute": cur.get("minute", ""),
+        "cur_score": cur.get("score", ""),
         "cur_time": cur["time"],
         "n_changes": len(rows),
     }
@@ -279,6 +360,92 @@ def parse_company_detail(html):
 
 def fetch_company_ou_detail(sid, cid=1, timeout=20):
     return parse_company_detail(fetch_text(CHANGE_URL.format(sid=sid, cid=cid), timeout=timeout))
+
+
+def fetch_spf_rows(sid, timeout=25):
+    """Parse European odds (胜平负) rows from the per-match JS data file.
+    Entry fields (pipe separated):
+      0 cid | 2 English name | 3-5 open H/D/A | 10-12 current H/D/A | 21 short name
+    """
+    text = fetch_text(SPF_DATA_URL.format(sid=sid), timeout=timeout)
+    a = text.find("var game=Array(")
+    if a < 0:
+        return []
+    a += len("var game=Array(")
+    b = text.find(");", a)
+    body = text[a:b] if b > a else text[a:]
+    rows = []
+    for ent in re.findall(r'"((?:[^"\\]|\\.)*)"', body, re.S):
+        p = ent.split("|")
+        if len(p) < 22:
+            continue
+
+        def odds(i):
+            try:
+                return (float(p[i]), float(p[i + 1]), float(p[i + 2]))
+            except (IndexError, TypeError, ValueError):
+                return None
+
+        rows.append(
+            {
+                "cid": p[0],
+                "name": p[2],
+                "short": p[21],
+                "open": odds(3),
+                "cur": odds(10),
+            }
+        )
+    return rows
+
+
+def parse_company_ah_detail(html):
+    """Parse changeDetail/handicap page.
+    Row: [分钟, 比分, 主水, 盘口, 客水, 变化时间, 状态], newest -> oldest.
+    """
+    rows = []
+    for rm in re.finditer(r"<TR[^>]*>(.*?)</TR>", html, re.S | re.I):
+        seg = rm.group(1)
+        tds = re.findall(r"<TD[^>]*>(.*?)</TD>", seg, re.S | re.I)
+        if len(tds) < 6:
+            continue
+
+        def clean(i):
+            return re.sub(r"<[^>]+>", "", tds[i]).strip()
+
+        wh = _f(clean(2))
+        line = parse_ah_line(clean(3))
+        wa = _f(clean(4))
+        if line is None and wh is None:
+            continue
+        rows.append(
+            {
+                "water_h": wh,
+                "line": line,
+                "water_a": wa,
+                "time": clean(5),
+                "status": clean(6) if len(tds) > 6 else "",
+            }
+        )
+    if not rows:
+        return None
+    opn, cur = rows[-1], rows[0]
+    return {
+        "open_water_h": opn["water_h"],
+        "open_line": opn["line"],
+        "open_water_a": opn["water_a"],
+        "open_time": opn["time"],
+        "cur_water_h": cur["water_h"],
+        "cur_line": cur["line"],
+        "cur_water_a": cur["water_a"],
+        "cur_time": cur["time"],
+        "n_changes": len(rows),
+    }
+
+
+def fetch_company_ah_detail(sid, cid=47, timeout=20):
+    return parse_company_ah_detail(
+        fetch_text(AH_CHANGE_URL.format(sid=sid, cid=cid), timeout=timeout)
+    )
 
 
 def _f(txt):
