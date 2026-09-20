@@ -2,15 +2,19 @@
 """东风‑61 洲际导弹 - 作者：程序猿虾米（本软件只提供数据参考，禁止非法赌博行为）"""
 
 import csv
+import concurrent.futures
 import json
 import os
 import queue
 import re
+import smtplib
 import sys
 import threading
 import time
 import tkinter as tk
 from datetime import datetime
+from email.header import Header
+from email.mime.text import MIMEText
 from tkinter import filedialog, messagebox, ttk
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -61,22 +65,34 @@ class ScannerApp(tk.Tk):
         super().__init__()
         self.title(
             "东风‑61 洲际导弹  -作者：程序猿虾"
-            "（本软件只提供数据参考，禁止非法赌博行为，如有不法行为后果自负）"
+            "（本软件只提供数据参考，禁止非法赌博行为，如有违法行为后果自负！）"
         )
         self.geometry("1560x920")
         self.running = False
         self.stop_ev = threading.Event()
         self.worker = None
+        self.score_thread = None
+        self._last_live = {}
+        self.live_meta = {}
+        self.live_info = {}
+        self._rechecked = set()
+        self._score_verified = set()
         self.events = queue.Queue()
         self.alerted = set()
         self.skip = set()
         self.last_rows = []
         self.all_rows = []
         self.live_sids = set()
+        self.live_meta = {}
         self.tend_sounded = set()
         default_wav = os.path.join(app_dir(), "alert.wav")
         self.sound_wav = default_wav if os.path.exists(default_wav) else None
         self.sound_mode = "自定义WAV" if self.sound_wav else "双声高音(默认)"
+        self.mail_cfg = {}
+        self._load_mail_cfg()
+        self.league_kw = []
+        self._load_league_filter()
+        self.all_leagues = self._load_all_leagues()
         self.sort_key = "time"
         self.sort_desc = False
         self.notes = {}
@@ -85,6 +101,24 @@ class ScannerApp(tk.Tk):
         self._build()
         self._load_history()
         self.live_sids = {str(r.get("sid")) for r in self.all_rows}
+        self.live_meta = {
+            str(r.get("sid")): r.get("kickoff") for r in self.all_rows
+        }
+        self.live_info = {
+            str(r.get("sid")): {
+                "kickoff": r.get("kickoff"),
+                "league": r.get("league", ""),
+                "home": r.get("home", ""),
+                "away": r.get("away", ""),
+                "time": r.get("time", ""),
+            }
+            for r in self.all_rows
+        }
+        self.tend_sounded.update(
+            str(r.get("sid"))
+            for r in self.all_rows
+            if r.get("bet_snapshot") and "倾向" in r["bet_snapshot"]
+        )
         if self.all_rows:
             self._render(self.all_rows, set())
             self.status.config(text=f"已恢复 {len(self.all_rows)} 场跟踪记录")
@@ -141,9 +175,28 @@ class ScannerApp(tk.Tk):
         ttk.Button(cfg, text="清空已完赛", command=self._clear_finished).pack(
             side="left", padx=4
         )
+        ttk.Button(cfg, text="删除选中", command=self._delete_selected).pack(
+            side="left", padx=4
+        )
         self.auto_clear_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(
             cfg, text="完场自动清空", variable=self.auto_clear_var
+        ).pack(side="left", padx=4)
+        ttk.Button(cfg, text="邮箱通知", command=self._open_mail_settings).pack(
+            side="left", padx=4
+        )
+        ttk.Button(cfg, text="胜率统计", command=self._show_winrate).pack(
+            side="left", padx=4
+        )
+        ttk.Button(cfg, text="联赛筛选", command=self._open_league_filter).pack(
+            side="left", padx=4
+        )
+        self.all_leagues_var = tk.BooleanVar(value=self.all_leagues)
+        ttk.Checkbutton(
+            cfg,
+            text="全联赛(不过滤)",
+            variable=self.all_leagues_var,
+            command=self._toggle_all_leagues,
         ).pack(side="left", padx=4)
         self.status = ttk.Label(cfg, text="空闲", foreground="#1a6bb8")
         self.status.pack(side="right")
@@ -192,7 +245,22 @@ class ScannerApp(tk.Tk):
         self.stop_ev.clear()
         self.alerted.clear()
         self.skip.clear()
-        self.tend_sounded.clear()
+        self.tend_sounded.update(
+            str(r.get("sid"))
+            for r in self.all_rows
+            if r.get("bet_snapshot") and "倾向" in r["bet_snapshot"]
+        )
+        self._rechecked.clear()
+        self._score_verified.clear()
+        for r in self.all_rows:
+            sid = str(r.get("sid"))
+            self.live_info[sid] = {
+                "kickoff": r.get("kickoff"),
+                "league": r.get("league", ""),
+                "home": r.get("home", ""),
+                "away": r.get("away", ""),
+                "time": r.get("time", ""),
+            }
         self.btn_start.config(state="disabled")
         self.btn_stop.config(state="normal")
         self.sound_mode = self.sound_cb.get()
@@ -209,6 +277,8 @@ class ScannerApp(tk.Tk):
         self.status.config(text="运行中")
         self.worker = threading.Thread(target=self._run, daemon=True)
         self.worker.start()
+        self.score_thread = threading.Thread(target=self._score_loop, daemon=True)
+        self.score_thread.start()
 
     def stop(self):
         self.running = False
@@ -231,14 +301,36 @@ class ScannerApp(tk.Tk):
                 self._sleep(10)
                 continue
             matches = [m for m in matches if m["sid"] not in self.skip]
+            if self.league_kw and not self.all_leagues_var.get():
+                before_filter = len(matches)
+                matches = [
+                    m for m in matches if self._league_ok(m.get("league", ""))
+                ]
+                if len(matches) != before_filter:
+                    self.events.put(
+                        (
+                            "log",
+                            f"联赛筛选: {before_filter} → {len(matches)} 场",
+                        )
+                    )
             self.events.put(("log", f"本轮 {len(matches)} 场，开始拉盘…"))
-            counters = {"ok": 0, "err": 0, "q": 0, "new": 0}
+            total = len(matches)
+            counters = {"ok": 0, "err": 0, "q": 0, "new": 0, "done": 0}
             results = []
 
             def on_result(r):
                 if self.stop_ev.is_set():
                     return
                 results.append(r)
+                counters["done"] += 1
+                if counters["done"] % 10 == 0:
+                    self.events.put(
+                        (
+                            "log",
+                            f"拉盘中 {counters['done']}/{total} "
+                            f"(成功{counters['ok']}/失败{counters['err']})",
+                        )
+                    )
                 if r.get("error"):
                     counters["err"] += 1
                     return
@@ -251,6 +343,14 @@ class ScannerApp(tk.Tk):
                         self.alerted.add(r["sid"])
                         counters["new"] += 1
                     self.live_sids.add(r["sid"])
+                    self.live_meta[r["sid"]] = r.get("kickoff")
+                    self.live_info[r["sid"]] = {
+                        "kickoff": r.get("kickoff"),
+                        "league": r.get("league", ""),
+                        "home": r.get("home", ""),
+                        "away": r.get("away", ""),
+                        "time": r.get("time", ""),
+                    }
                     self.events.put(("row", r, is_new))
                     try:
                         pf = sc.fetch_platform_ou(r["sid"])
@@ -292,25 +392,107 @@ class ScannerApp(tk.Tk):
                     time.time() - t0,
                 )
             )
-            for sid in list(self.live_sids):
-                if not self.running:
-                    break
-                try:
-                    d = t.fetch_company_ou_detail(sid, cid=self.cid, timeout=18)
-                except Exception:
-                    continue
-                if d:
-                    self.events.put(
-                        (
-                            "live",
-                            sid,
-                            (d.get("cur_score") or "").strip(),
-                            (d.get("cur_minute") or "").strip(),
-                        )
-                    )
             cost = time.time() - t0
             self._sleep(max(5, self.interval - cost))
         self.events.put(("stopped", None))
+
+    def _score_loop(self):
+        from datetime import datetime, timedelta
+
+        while self.running and not self.stop_ev.is_set():
+            now = datetime.now()
+            sids = []
+            for sid in list(self.live_sids):
+                ko = self.live_meta.get(sid)
+                if ko:
+                    try:
+                        ko_dt = datetime.strptime(ko, "%Y-%m-%d %H:%M")
+                        if now < ko_dt - timedelta(minutes=5):
+                            continue
+                    except (TypeError, ValueError):
+                        pass
+                sids.append(sid)
+            if sids and self.running:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
+                    fut_map = {
+                        ex.submit(
+                            t.fetch_company_ou_detail, sid, self.cid, 15
+                        ): sid
+                        for sid in sids
+                    }
+                    for fut in concurrent.futures.as_completed(fut_map):
+                        sid = fut_map[fut]
+                        try:
+                            d = fut.result()
+                        except Exception:
+                            continue
+                        if not d:
+                            continue
+                        score = (d.get("cur_score") or "").strip()
+                        minute = (d.get("cur_minute") or "").strip()
+                        key = (score, minute)
+                        if self._last_live.get(sid) != key:
+                            self._last_live[sid] = key
+                            self.events.put(("live", sid, score, minute))
+            # 完场后用 500.com 校准最终比分(每场一次)
+            now3 = datetime.now()
+            for sid, info in list(self.live_info.items()):
+                if sid in self._score_verified:
+                    continue
+                ko = info.get("kickoff")
+                if not ko:
+                    continue
+                try:
+                    ko_dt = datetime.strptime(ko, "%Y-%m-%d %H:%M")
+                except (TypeError, ValueError):
+                    continue
+                if now3 < ko_dt + timedelta(minutes=135):
+                    continue
+                try:
+                    res = sc.match_final_score(info)
+                except Exception:
+                    res = None
+                if res:
+                    self._score_verified.add(sid)
+                    score = f"{res['hg']}-{res['ag']}"
+                    if self._last_live.get(sid) != (score, ""):
+                        self._last_live[sid] = (score, "")
+                        self.events.put(("live", sid, score, ""))
+            # 开赛前 10 分钟最后复查一次倾向
+            now2 = datetime.now()
+            for sid, info in list(self.live_info.items()):
+                if sid in self._rechecked:
+                    continue
+                ko = info.get("kickoff")
+                if not ko:
+                    continue
+                try:
+                    ko_dt = datetime.strptime(ko, "%Y-%m-%d %H:%M")
+                except (TypeError, ValueError):
+                    continue
+                if now2 < ko_dt - timedelta(minutes=10) or now2 >= ko_dt:
+                    continue
+                self._rechecked.add(sid)
+                try:
+                    m = {
+                        "sid": sid,
+                        "league": info.get("league", ""),
+                        "home": info.get("home", ""),
+                        "away": info.get("away", ""),
+                        "time": info.get("time", ""),
+                        "kickoff": ko,
+                    }
+                    r = sc.fetch_one(m, cid=self.cid, cid2=3, timeout=12)
+                    if r and not r.get("error"):
+                        pf = sc.fetch_platform_ou(sid)
+                        if pf:
+                            r["platform"] = pf
+                        self.events.put(("row", r, False))
+                except Exception:
+                    pass
+            end = time.time() + 30
+            while self.running and not self.stop_ev.is_set() and time.time() < end:
+                time.sleep(0.5)
 
     def _sleep(self, secs):
         end = time.time() + secs
@@ -350,6 +532,33 @@ class ScannerApp(tk.Tk):
         except Exception:
             pass
 
+    def _delete_selected(self):
+        sel = self.tree.selection()
+        if not sel:
+            self._append_log("请先在表格里选中要删除的场次")
+            return
+        sid = str(sel[0])
+        row = next(
+            (r for r in self.all_rows if str(r.get("sid")) == sid), None
+        )
+        self.all_rows = [
+            r for r in self.all_rows if str(r.get("sid")) != sid
+        ]
+        self.live_sids.discard(sid)
+        self.live_meta.pop(sid, None)
+        self.live_info.pop(sid, None)
+        self.tend_sounded.discard(sid)
+        self._rechecked.discard(sid)
+        self._score_verified.discard(sid)
+        self._render(self.all_rows, set())
+        self._save_history()
+        name = (
+            f"{row.get('home', '')} vs {row.get('away', '')}"
+            if row
+            else sid
+        )
+        self._append_log(f"已删除场次: {name}")
+
     def _clear_finished(self):
         before = len(self.all_rows)
         self.all_rows = [
@@ -375,6 +584,251 @@ class ScannerApp(tk.Tk):
             if len(self.all_rows) != before:
                 self._render(self.all_rows, set())
                 self._save_history()
+
+    def _mail_cfg_path(self):
+        return os.path.join(app_dir(), "email_config.json")
+
+    def _load_mail_cfg(self):
+        p = self._mail_cfg_path()
+        if os.path.exists(p):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    self.mail_cfg = data
+            except Exception:
+                self.mail_cfg = {}
+
+    def _save_mail_cfg(self):
+        try:
+            with open(self._mail_cfg_path(), "w", encoding="utf-8") as f:
+                json.dump(self.mail_cfg, f, ensure_ascii=False, indent=1)
+        except Exception as e:
+            self._append_log(f"邮箱配置保存失败: {e}")
+
+    def _open_mail_settings(self):
+        win = tk.Toplevel(self)
+        win.title("QQ邮箱通知设置")
+        win.transient(self)
+        win.grab_set()
+        win.resizable(False, False)
+        pad = {"padx": 10, "pady": 4}
+
+        def row(label):
+            frm = ttk.Frame(win)
+            frm.pack(fill="x", **pad)
+            ttk.Label(frm, text=label, width=14).pack(side="left")
+            e = ttk.Entry(frm, width=46)
+            e.pack(side="left", fill="x", expand=True)
+            return e
+
+        e_sender = row("发件QQ邮箱:")
+        e_auth = row("SMTP授权码:")
+        e_to = row("收件邮箱(多地址用,分隔):")
+        e_sender.insert(0, self.mail_cfg.get("sender", ""))
+        e_auth.insert(0, self.mail_cfg.get("auth", ""))
+        old_to = self.mail_cfg.get("to", "")
+        if isinstance(old_to, list):
+            old_to = ",".join(old_to)
+        e_to.insert(0, old_to)
+        enabled = tk.BooleanVar(value=bool(self.mail_cfg.get("enabled")))
+        ttk.Checkbutton(win, text="启用邮箱通知", variable=enabled).pack(
+            anchor="w", **pad
+        )
+        ttk.Label(
+            win,
+            text="授权码获取: mail.qq.com → 设置 → 账户 → 开启SMTP服务 → 生成授权码",
+            foreground="#556",
+        ).pack(anchor="w", **pad)
+
+        def save():
+            raw_to = e_to.get()
+            to_list = [
+                x.strip()
+                for x in re.split(r"[，,;\s]+", raw_to)
+                if "@" in x
+            ]
+            self.mail_cfg = {
+                "smtp": "smtp.qq.com",
+                "port": 465,
+                "sender": e_sender.get().strip(),
+                "auth": e_auth.get().strip(),
+                "to": to_list,
+                "enabled": enabled.get(),
+            }
+            self._save_mail_cfg()
+            self._append_log("邮箱通知设置已保存")
+            win.destroy()
+
+        btns = ttk.Frame(win)
+        btns.pack(pady=8)
+        ttk.Button(btns, text="保存", command=save).pack(side="left", padx=8)
+        ttk.Button(btns, text="取消", command=win.destroy).pack(side="left", padx=8)
+        win.geometry(f"+{self.winfo_rootx() + 100}+{self.winfo_rooty() + 150}")
+        self.wait_window(win)
+
+    def _send_tend_mail(self, r):
+        cfg = self.mail_cfg
+        if not cfg.get("enabled") or not all(
+            cfg.get(k) for k in ("sender", "auth", "to")
+        ):
+            return
+        cell = r.get("bet_snapshot") or sc.betting_reference(r)
+        body = (
+            f"联赛: {r.get('league', '')}\n"
+            f"开赛: {r.get('kickoff') or r.get('time', '')}\n"
+            f"主队: {r.get('home', '')}\n"
+            f"客队: {r.get('away', '')}\n"
+            f"下注层: {cell}\n"
+        )
+        subject = f"东风-61洲际导弹 倾向提醒: {r.get('league', '')} {r.get('home', '')} vs {r.get('away', '')}"
+        threading.Thread(
+            target=self._mail_worker,
+            args=(cfg, subject, body),
+            daemon=True,
+        ).start()
+
+    def _mail_worker(self, cfg, subject, body):
+        try:
+            msg = MIMEText(body, "plain", "utf-8")
+            msg["Subject"] = Header(subject, "utf-8")
+            msg["From"] = cfg["sender"]
+            tos = cfg["to"] if isinstance(cfg["to"], list) else [cfg["to"]]
+            msg["To"] = ", ".join(tos)
+            with smtplib.SMTP_SSL(cfg["smtp"], int(cfg.get("port", 465)), timeout=25) as s:
+                s.login(cfg["sender"], cfg["auth"])
+                s.sendmail(cfg["sender"], tos, msg.as_string())
+            self.events.put(("log", f"邮件已发送: {subject}"))
+        except Exception as e:
+            self.events.put(("log", f"邮件发送失败: {type(e).__name__}: {e}"))
+
+    def _league_filter_path(self):
+        return os.path.join(app_dir(), "league_filter.json")
+
+    def _load_league_filter(self):
+        p = self._league_filter_path()
+        if os.path.exists(p):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, list):
+                    self.league_kw = [str(x).strip() for x in data if str(x).strip()]
+            except Exception:
+                self.league_kw = []
+
+    def _app_settings_path(self):
+        return os.path.join(app_dir(), "app_settings.json")
+
+    def _load_all_leagues(self):
+        p = self._app_settings_path()
+        if os.path.exists(p):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                return bool(data.get("all_leagues"))
+            except Exception:
+                return False
+        return False
+
+    def _toggle_all_leagues(self):
+        self.all_leagues = bool(self.all_leagues_var.get())
+        try:
+            with open(self._app_settings_path(), "w", encoding="utf-8") as f:
+                json.dump({"all_leagues": self.all_leagues}, f, ensure_ascii=False)
+        except Exception as e:
+            self._append_log(f"设置保存失败: {e}")
+        self._append_log(
+            "已切换为: 全联赛(不过滤)" if self.all_leagues else "已切换为: 按联赛名单过滤"
+        )
+
+    def _league_ok(self, name):
+        if not self.league_kw:
+            return True
+        for k in self.league_kw:
+            if k == "甲级":
+                if "甲" in name:
+                    return True
+            elif k and k in name:
+                return True
+        return False
+
+    def _open_league_filter(self):
+        win = tk.Toplevel(self)
+        win.title("联赛筛选设置")
+        win.transient(self)
+        win.resizable(False, False)
+        ttk.Label(
+            win,
+            text="每行一个关键词(留空=扫全部联赛); 填“甲级”=所有名称含“甲”的联赛",
+        ).pack(padx=10, pady=(8, 2))
+        txt = tk.Text(win, width=44, height=12)
+        txt.pack(padx=10)
+        txt.insert("1.0", "\n".join(self.league_kw))
+
+        def save():
+            raw = txt.get("1.0", "end")
+            self.league_kw = [
+                x.strip() for x in raw.replace("，", ",").replace("\n", ",").split(",")
+                if x.strip()
+            ]
+            try:
+                with open(self._league_filter_path(), "w", encoding="utf-8") as f:
+                    json.dump(self.league_kw, f, ensure_ascii=False, indent=1)
+            except Exception as e:
+                self._append_log(f"联赛筛选保存失败: {e}")
+            self._append_log(f"联赛筛选已保存: {len(self.league_kw)} 个关键词")
+            win.destroy()
+
+        btns = ttk.Frame(win)
+        btns.pack(pady=8)
+        ttk.Button(btns, text="保存", command=save).pack(side="left", padx=8)
+        ttk.Button(btns, text="取消", command=win.destroy).pack(side="left", padx=8)
+        win.geometry(f"+{self.winfo_rootx() + 120}+{self.winfo_rooty() + 140}")
+        self.wait_window(win)
+
+    def _settled_stats(self):
+        win = loss = push = 0
+        for r in self.all_rows:
+            snap = r.get("bet_snapshot") or ""
+            if "倾向" not in snap:
+                continue
+            verdict = sc.result_verdict(r)
+            if verdict == "✔":
+                win += 1
+            elif verdict == "✘":
+                loss += 1
+            elif verdict == "走盘":
+                push += 1
+        if win + loss == 0:
+            rate_txt = "暂无胜率(等完场结算)"
+        else:
+            rate_txt = f"胜率 {100.0 * win / (win + loss):.1f}%"
+        return {
+            "win": win,
+            "loss": loss,
+            "push": push,
+            "rate": rate_txt,
+        }
+
+    def _show_winrate(self):
+        s = self._settled_stats()
+        text = (
+            f"已结算 {s['win'] + s['loss'] + s['push']} 场\n"
+            f"命中 ✔: {s['win']} 场\n"
+            f"未中 ✘: {s['loss']} 场\n"
+            f"走盘: {s['push']} 场\n"
+            f"当前命中率: {s['rate']}"
+        )
+        win = tk.Toplevel(self)
+        win.title("胜率统计")
+        win.transient(self)
+        win.resizable(False, False)
+        tk.Label(
+            win, text=text, justify="left", font=("Microsoft YaHei", 11), padx=18, pady=12
+        ).pack()
+        ttk.Button(win, text="关闭", command=win.destroy).pack(pady=(0, 10))
+        win.geometry(f"+{self.winfo_rootx() + 150}+{self.winfo_rooty() + 180}")
+        self._append_log(f"胜率统计: {s['win']}中/{s['loss']}不中 走盘{s['push']} {s['rate']}")
 
     def _poll(self):
         try:
@@ -422,6 +876,7 @@ class ScannerApp(tk.Tk):
                             f"{sc.betting_reference(r)}"
                         )
                         self._play_tend_sound()
+                        self._send_tend_mail(r)
                 elif kind == "live":
                     sid, score, minute = ev[1], ev[2], ev[3]
                     for x in self.all_rows:
@@ -676,7 +1131,7 @@ class ScannerApp(tk.Tk):
         rows = self.last_rows
         if scope == "buy":
             rows = [
-                r for r in self.last_rows if "倾向" in sc.betting_reference(r)
+                r for r in self.last_rows if "倾向" in sc.bet_cell(r)
             ]
         if not rows:
             messagebox.showinfo("提示", "当前没有可导出的数据")
@@ -690,41 +1145,16 @@ class ScannerApp(tk.Tk):
             return
         with open(path, "w", newline="", encoding="utf-8-sig") as f:
             w = csv.writer(f)
-            w.writerow(
-                [
-                    "联赛", "开赛", "比分/状态", "主队", "客队",
-                    "主公司初盘", "主公司即时", "盘差", "初盘时间", "即时时间",
-                    "皇冠初盘", "皇冠即时",
-                    "下注层", "备注",
-                ]
-            )
+            w.writerow(["联赛", "开赛", "比分/状态", "主队", "客队", "下注层"])
             for r in rows:
                 w.writerow(
                     [
-                        r.get("league", ""), r.get("time", ""),
-                        sc.score_status(r), r.get("home", ""),
+                        r.get("league", ""),
+                        r.get("time", ""),
+                        sc.score_status(r),
+                        r.get("home", ""),
                         r.get("away", ""),
-                        sc.fmt_odds(r.get("open_line"), r.get("open_big"), r.get("open_small")),
-                        sc.fmt_odds(r.get("cur_line"), r.get("cur_big"), r.get("cur_small")),
-                        r.get("diff", ""),
-                        r.get("open_time", ""), r.get("cur_time", ""),
-                        sc.fmt_odds(
-                            r.get("c2_open_line"), r.get("c2_open_big"), r.get("c2_open_small")
-                        ),
-                        sc.fmt_odds(
-                            r.get("c2_cur_line"), r.get("c2_cur_big"), r.get("c2_cur_small")
-                        ),
                         sc.bet_cell(r),
-                        self.notes.get(str(r["sid"]), "")
-                        or (
-                            f"平{sc.fmt_line(r.get('cur_line'))}≠皇{sc.fmt_line(r.get('c2_cur_line'))}"
-                            if (
-                                r.get("cur_line") is not None
-                                and r.get("c2_cur_line") is not None
-                                and abs(float(r["cur_line"]) - float(r["c2_cur_line"])) >= 1e-9
-                            )
-                            else ""
-                        ),
                     ]
                 )
         self._append_log(f"已导出 {path}")
@@ -768,6 +1198,8 @@ class ScannerApp(tk.Tk):
 
 def main():
     app = ScannerApp()
+    if "--autostart" in sys.argv:
+        app.start()
     app.mainloop()
 
 

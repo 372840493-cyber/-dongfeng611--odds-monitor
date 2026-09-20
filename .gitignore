@@ -5,4 +5,7 @@ __pycache__/
 *.pyc
 notes.json
 track_history.json
+email_config.json
+league_filter.json
+app_settings.json
 *.spec

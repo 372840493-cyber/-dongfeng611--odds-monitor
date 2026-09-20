@@ -683,3 +683,65 @@ def qualify(results, threshold):
             out.append(r)
     out.sort(key=lambda r: float(r.get("diff") or 0), reverse=True)
     return out
+
+
+_WANCHANG_CACHE = {"t": 0.0, "rows": None}
+
+
+def fetch_500_results(timeout=25):
+    """Fetch finished-match scores from live.500.com (cached ~10 min)."""
+    import time as _time
+    import re as _re
+    import difflib
+
+    if _WANCHANG_CACHE["rows"] is not None and _time.time() - _WANCHANG_CACHE["t"] < 600:
+        return _WANCHANG_CACHE["rows"]
+    try:
+        html = t.fetch_text("https://live.500.com/wanchang.php", timeout=timeout)
+    except Exception:
+        return _WANCHANG_CACHE["rows"] or []
+    rows = []
+    for m in _re.finditer(r'<tr id="a(\d+)"[^>]*gy="([^"]*)"[^>]*>(.*?)</tr>', html, _re.S):
+        seg = m.group(3)
+        names = _re.findall(r'class="(?:mainName|clientName)">([^<]+)</span>', seg)
+        times = _re.findall(r'<td align="center">(\d\d-\d\d \d\d:\d\d)</td>', seg)
+        sc = _re.search(r'class="clt1"[^>]*>(\d+)</a>.*?class="clt3"[^>]*>(\d+)', seg, _re.S)
+        if len(names) >= 2 and times and sc:
+            rows.append(
+                {
+                    "time": times[0],
+                    "home": names[0].strip(),
+                    "away": names[1].strip(),
+                    "hg": int(sc.group(1)),
+                    "ag": int(sc.group(2)),
+                }
+            )
+    _WANCHANG_CACHE["rows"] = rows
+    _WANCHANG_CACHE["t"] = _time.time()
+    return rows
+
+
+def match_final_score(row, results=None):
+    """Find authoritative final score for a row by kickoff time + fuzzy team names."""
+    import difflib
+
+    if results is None:
+        results = fetch_500_results()
+    ko = (row.get("kickoff") or "").strip()
+    target = ko[5:16] if len(ko) >= 16 else ""
+    home = (row.get("home") or "").strip()
+    away = (row.get("away") or "").strip()
+    best = None
+    best_ratio = 0.0
+    for res in results:
+        if target and res["time"] != target:
+            continue
+        r1 = difflib.SequenceMatcher(None, home, res["home"]).ratio()
+        r2 = difflib.SequenceMatcher(None, away, res["away"]).ratio()
+        ratio = (r1 + r2) / 2.0
+        if ratio > best_ratio:
+            best_ratio = ratio
+            best = res
+    if best and best_ratio >= 0.55:
+        return best
+    return None

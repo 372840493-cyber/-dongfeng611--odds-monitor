@@ -3,6 +3,7 @@
 
 import os
 import re
+import socket
 import urllib.request
 
 UA = {
@@ -60,8 +61,53 @@ def _decode(raw):
 
 def fetch_text(url, timeout=25):
     req = urllib.request.Request(url, headers=UA)
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return _decode(r.read())
+    last_err = None
+    proxies = urllib.request.getproxies()
+    if proxies:
+        attempts = (("default", timeout), ("direct", timeout))
+    else:
+        attempts = [("direct", min(timeout, 8))]
+        if _proxy_alive():
+            attempts.append(("proxy7890", min(timeout, 8)))
+    for mode, tmo in attempts:
+        try:
+            if mode == "default":
+                resp = urllib.request.urlopen(req, timeout=timeout)
+            elif mode == "direct":
+                opener = urllib.request.build_opener(
+                    urllib.request.ProxyHandler({})
+                )
+                resp = opener.open(req, timeout=tmo)
+            else:
+                opener = urllib.request.build_opener(
+                    urllib.request.ProxyHandler(
+                        {
+                            "http": "http://127.0.0.1:7890",
+                            "https": "http://127.0.0.1:7890",
+                        }
+                    )
+                )
+                resp = opener.open(req, timeout=tmo)
+            with resp as r:
+                return _decode(r.read())
+        except Exception as e:
+            last_err = e
+            msg = str(e)
+            if mode == "default" and not any(
+                k in msg
+                for k in ("refused", "timed out", "Timeout", "EOF", "10061")
+            ):
+                break
+    raise last_err
+
+
+def _proxy_alive():
+    try:
+        s = socket.create_connection(("127.0.0.1", 7890), timeout=0.4)
+        s.close()
+        return True
+    except OSError:
+        return False
 
 
 def fetch_ids():
