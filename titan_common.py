@@ -219,10 +219,21 @@ def parse_line(txt):
     return None
 
 
+AH_MAP.setdefault("平手", 0.0)
+for _k, _v in list(AH_MAP.items()):
+    if _k.startswith("受"):
+        continue
+    AH_MAP.setdefault("受" + _k, -_v)
+    AH_MAP.setdefault("受让" + _k, -_v)
+
+
 def parse_ah_line(txt):
     txt = (txt or "").replace(" ", "")
     if not txt:
         return None
+    txt = txt.replace("受让", "受")
+    if txt.startswith("让"):
+        txt = txt[1:]
     if txt in AH_MAP:
         return AH_MAP[txt]
     m = re.match(r"^受(.+)$", txt)
