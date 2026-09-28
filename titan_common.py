@@ -3,7 +3,9 @@
 
 import os
 import re
+import shutil
 import socket
+import subprocess
 import threading
 import time
 import urllib.request
@@ -104,7 +106,58 @@ def _proxy_alive():
         return False
 
 
+_CURL = shutil.which("curl.exe") or shutil.which("curl")
+
+
+def _curl_fetch(url, timeout=25, proxy=None):
+    args = [
+        _CURL,
+        "-sS",
+        "--max-time",
+        str(int(timeout)),
+        "-A",
+        UA["User-Agent"],
+        "-H",
+        "Accept-Language: zh-CN,zh;q=0.9",
+        "-H",
+        "Referer: https://www.titan007.com/",
+        "-w",
+        "\n__HTTP__%{http_code}",
+    ]
+    if proxy:
+        args += ["-x", proxy]
+    args.append(url)
+    r = subprocess.run(args, capture_output=True, timeout=int(timeout) + 5)
+    if r.returncode != 0:
+        raise RuntimeError(f"curl exit {r.returncode}: {r.stderr[:120]!r}")
+    out = r.stdout
+    marker = b"\n__HTTP__"
+    idx = out.rfind(marker)
+    if idx < 0:
+        raise RuntimeError("curl status parse failed")
+    code = int((out[idx + len(marker):] or b"0").strip() or 0)
+    body = out[:idx]
+    if code >= 400:
+        raise RuntimeError(f"HTTP {code}")
+    return _decode(body)
+
+
 def fetch_text(url, timeout=25):
+    _throttle()
+    if _CURL:
+        try:
+            return _curl_fetch(url, timeout)
+        except Exception:
+            pass
+        if _PROXY_CFG["enabled"] and _proxy_alive():
+            try:
+                return _curl_fetch(url, timeout, proxy_url())
+            except Exception:
+                pass
+    return _urllib_fetch(url, timeout)
+
+
+def _urllib_fetch(url, timeout=25):
     req = urllib.request.Request(url, headers=UA)
     last_err = None
     proxies = urllib.request.getproxies()
