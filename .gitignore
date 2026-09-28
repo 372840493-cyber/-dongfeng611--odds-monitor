@@ -8,4 +8,5 @@ track_history.json
 email_config.json
 league_filter.json
 app_settings.json
+proxy_config.json
 *.spec

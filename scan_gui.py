@@ -93,6 +93,13 @@ class ScannerApp(tk.Tk):
         self.league_kw = []
         self._load_league_filter()
         self.all_leagues = self._load_all_leagues()
+        self.proxy_cfg = self._load_proxy_cfg()
+        t.set_proxy(
+            self.proxy_cfg.get("host", "127.0.0.1"),
+            self.proxy_cfg.get("port", 7890),
+            self.proxy_cfg.get("enabled", True),
+            self.proxy_cfg.get("prefer", True),
+        )
         self.sort_key = "time"
         self.sort_desc = False
         self.notes = {}
@@ -189,6 +196,9 @@ class ScannerApp(tk.Tk):
             side="left", padx=4
         )
         ttk.Button(cfg, text="联赛筛选", command=self._open_league_filter).pack(
+            side="left", padx=4
+        )
+        ttk.Button(cfg, text="代理设置", command=self._open_proxy_settings).pack(
             side="left", padx=4
         )
         self.all_leagues_var = tk.BooleanVar(value=self.all_leagues)
@@ -701,6 +711,85 @@ class ScannerApp(tk.Tk):
             self.events.put(("log", f"邮件已发送: {subject}"))
         except Exception as e:
             self.events.put(("log", f"邮件发送失败: {type(e).__name__}: {e}"))
+
+    def _proxy_cfg_path(self):
+        return os.path.join(app_dir(), "proxy_config.json")
+
+    def _load_proxy_cfg(self):
+        p = self._proxy_cfg_path()
+        if os.path.exists(p):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    return {
+                        "host": str(data.get("host", "127.0.0.1")),
+                        "port": int(data.get("port", 7890)),
+                        "enabled": bool(data.get("enabled", True)),
+                        "prefer": bool(data.get("prefer", True)),
+                    }
+            except Exception:
+                pass
+        return {"host": "127.0.0.1", "port": 7890, "enabled": True, "prefer": True}
+
+    def _open_proxy_settings(self):
+        win = tk.Toplevel(self)
+        win.title("代理设置")
+        win.transient(self)
+        win.resizable(False, False)
+        frm = ttk.Frame(win, padding=10)
+        frm.pack(fill="x")
+        ttk.Label(frm, text="代理地址:").grid(row=0, column=0, sticky="w", pady=4)
+        e_host = ttk.Entry(frm, width=24)
+        e_host.grid(row=0, column=1, pady=4)
+        ttk.Label(frm, text="端口:").grid(row=1, column=0, sticky="w", pady=4)
+        e_port = ttk.Entry(frm, width=10)
+        e_port.grid(row=1, column=1, sticky="w", pady=4)
+        e_host.insert(0, self.proxy_cfg.get("host", "127.0.0.1"))
+        e_port.insert(0, str(self.proxy_cfg.get("port", 7890)))
+        en = tk.BooleanVar(value=self.proxy_cfg.get("enabled", True))
+        pf = tk.BooleanVar(value=self.proxy_cfg.get("prefer", True))
+        ttk.Checkbutton(frm, text="启用代理", variable=en).grid(
+            row=2, column=0, columnspan=2, sticky="w", pady=2
+        )
+        ttk.Checkbutton(frm, text="优先走代理(直连被风控时勾选)", variable=pf).grid(
+            row=3, column=0, columnspan=2, sticky="w", pady=2
+        )
+
+        def save():
+            try:
+                port = int(e_port.get().strip())
+            except ValueError:
+                port = 7890
+            self.proxy_cfg = {
+                "host": e_host.get().strip() or "127.0.0.1",
+                "port": port,
+                "enabled": bool(en.get()),
+                "prefer": bool(pf.get()),
+            }
+            try:
+                with open(self._proxy_cfg_path(), "w", encoding="utf-8") as f:
+                    json.dump(self.proxy_cfg, f, ensure_ascii=False, indent=1)
+            except Exception as e:
+                self._append_log(f"代理配置保存失败: {e}")
+            t.set_proxy(
+                self.proxy_cfg["host"],
+                self.proxy_cfg["port"],
+                self.proxy_cfg["enabled"],
+                self.proxy_cfg["prefer"],
+            )
+            self._append_log(
+                f"代理设置已保存: {self.proxy_cfg['host']}:{self.proxy_cfg['port']} "
+                f"启用={self.proxy_cfg['enabled']} 优先={self.proxy_cfg['prefer']}"
+            )
+            win.destroy()
+
+        btns = ttk.Frame(win)
+        btns.pack(pady=8)
+        ttk.Button(btns, text="保存", command=save).pack(side="left", padx=8)
+        ttk.Button(btns, text="取消", command=win.destroy).pack(side="left", padx=8)
+        win.geometry(f"+{self.winfo_rootx() + 120}+{self.winfo_rooty() + 140}")
+        self.wait_window(win)
 
     def _league_filter_path(self):
         return os.path.join(app_dir(), "league_filter.json")

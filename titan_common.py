@@ -65,6 +65,24 @@ _REQ_LOCK = threading.Lock()
 _LAST_REQ = {"t": 0.0}
 _MIN_GAP = 0.25
 
+_PROXY_CFG = {"host": "127.0.0.1", "port": 7890, "enabled": True, "prefer": False}
+
+
+def set_proxy(host=None, port=None, enabled=True, prefer=False):
+    if host:
+        _PROXY_CFG["host"] = str(host).strip()
+    try:
+        if port:
+            _PROXY_CFG["port"] = int(port)
+    except (TypeError, ValueError):
+        pass
+    _PROXY_CFG["enabled"] = bool(enabled)
+    _PROXY_CFG["prefer"] = bool(prefer)
+
+
+def proxy_url():
+    return f"http://{_PROXY_CFG['host']}:{_PROXY_CFG['port']}"
+
 
 def _throttle():
     with _REQ_LOCK:
@@ -75,16 +93,30 @@ def _throttle():
         _LAST_REQ["t"] = time.time()
 
 
+def _proxy_alive():
+    try:
+        s = socket.create_connection(
+            (_PROXY_CFG["host"], int(_PROXY_CFG["port"])), timeout=0.4
+        )
+        s.close()
+        return True
+    except OSError:
+        return False
+
+
 def fetch_text(url, timeout=25):
     req = urllib.request.Request(url, headers=UA)
     last_err = None
     proxies = urllib.request.getproxies()
+    custom = []
+    if _PROXY_CFG["enabled"] and _proxy_alive():
+        custom = [("custom", min(timeout, 10))]
     if proxies:
-        attempts = (("default", timeout), ("direct", timeout))
+        attempts = [("default", timeout)] + custom + [("direct", timeout)]
+    elif _PROXY_CFG["prefer"] and custom:
+        attempts = custom + [("direct", min(timeout, 8))]
     else:
-        attempts = [("direct", min(timeout, 8))]
-        if _proxy_alive():
-            attempts.append(("proxy7890", min(timeout, 8)))
+        attempts = [("direct", min(timeout, 8))] + custom
     for mode, tmo in attempts:
         try:
             _throttle()
@@ -98,10 +130,7 @@ def fetch_text(url, timeout=25):
             else:
                 opener = urllib.request.build_opener(
                     urllib.request.ProxyHandler(
-                        {
-                            "http": "http://127.0.0.1:7890",
-                            "https": "http://127.0.0.1:7890",
-                        }
+                        {"http": proxy_url(), "https": proxy_url()}
                     )
                 )
                 resp = opener.open(req, timeout=tmo)
@@ -116,15 +145,6 @@ def fetch_text(url, timeout=25):
             ):
                 break
     raise last_err
-
-
-def _proxy_alive():
-    try:
-        s = socket.create_connection(("127.0.0.1", 7890), timeout=0.4)
-        s.close()
-        return True
-    except OSError:
-        return False
 
 
 def fetch_ids():
