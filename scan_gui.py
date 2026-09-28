@@ -155,7 +155,7 @@ class ScannerApp(tk.Tk):
         self.e_int.pack(side="left", padx=(2, 10))
         ttk.Label(cfg, text="并发:").pack(side="left")
         self.e_workers = ttk.Entry(cfg, width=5)
-        self.e_workers.insert(0, "4")
+        self.e_workers.insert(0, "2")
         self.e_workers.pack(side="left", padx=(2, 10))
         self.btn_start = ttk.Button(cfg, text="开始扫描", command=self.start)
         self.btn_start.pack(side="left", padx=6)

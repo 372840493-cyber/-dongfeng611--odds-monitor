@@ -4,6 +4,8 @@
 import os
 import re
 import socket
+import threading
+import time
 import urllib.request
 
 UA = {
@@ -59,6 +61,20 @@ def _decode(raw):
     return raw.decode("utf-8", errors="replace")
 
 
+_REQ_LOCK = threading.Lock()
+_LAST_REQ = {"t": 0.0}
+_MIN_GAP = 0.25
+
+
+def _throttle():
+    with _REQ_LOCK:
+        now = time.time()
+        wait = _MIN_GAP - (now - _LAST_REQ["t"])
+        if wait > 0:
+            time.sleep(wait)
+        _LAST_REQ["t"] = time.time()
+
+
 def fetch_text(url, timeout=25):
     req = urllib.request.Request(url, headers=UA)
     last_err = None
@@ -71,6 +87,7 @@ def fetch_text(url, timeout=25):
             attempts.append(("proxy7890", min(timeout, 8)))
     for mode, tmo in attempts:
         try:
+            _throttle()
             if mode == "default":
                 resp = urllib.request.urlopen(req, timeout=timeout)
             elif mode == "direct":
