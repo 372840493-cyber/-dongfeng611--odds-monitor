@@ -93,6 +93,13 @@ class ScannerApp(tk.Tk):
         self.league_kw = []
         self._load_league_filter()
         self.all_leagues = self._load_all_leagues()
+        self.proxy_cfg = self._load_proxy_cfg()
+        t.set_proxy(
+            self.proxy_cfg.get("host", "127.0.0.1"),
+            self.proxy_cfg.get("port", 7890),
+            self.proxy_cfg.get("enabled", True),
+            self.proxy_cfg.get("prefer", True),
+        )
         self.sort_key = "time"
         self.sort_desc = False
         self.notes = {}
@@ -155,7 +162,7 @@ class ScannerApp(tk.Tk):
         self.e_int.pack(side="left", padx=(2, 10))
         ttk.Label(cfg, text="并发:").pack(side="left")
         self.e_workers = ttk.Entry(cfg, width=5)
-        self.e_workers.insert(0, "4")
+        self.e_workers.insert(0, "2")
         self.e_workers.pack(side="left", padx=(2, 10))
         self.btn_start = ttk.Button(cfg, text="开始扫描", command=self.start)
         self.btn_start.pack(side="left", padx=6)
@@ -182,6 +189,9 @@ class ScannerApp(tk.Tk):
         ttk.Checkbutton(
             cfg, text="完场自动清空", variable=self.auto_clear_var
         ).pack(side="left", padx=4)
+        ttk.Button(cfg, text="汇总发送", command=self._send_digest_now).pack(
+            side="left", padx=4
+        )
         ttk.Button(cfg, text="邮箱通知", command=self._open_mail_settings).pack(
             side="left", padx=4
         )
@@ -279,6 +289,8 @@ class ScannerApp(tk.Tk):
         self.worker.start()
         self.score_thread = threading.Thread(target=self._score_loop, daemon=True)
         self.score_thread.start()
+        self.daily_thread = threading.Thread(target=self._daily_mail_loop, daemon=True)
+        self.daily_thread.start()
 
     def stop(self):
         self.running = False
@@ -688,9 +700,25 @@ class ScannerApp(tk.Tk):
             daemon=True,
         ).start()
 
-    def _mail_worker(self, cfg, subject, body):
+    def _mail_worker(self, cfg, subject, body, attachment=None):
         try:
-            msg = MIMEText(body, "plain", "utf-8")
+            if attachment:
+                from email.mime.base import MIMEBase
+                from email.mime.multipart import MIMEMultipart
+                from email import encoders
+
+                msg = MIMEMultipart()
+                msg.attach(MIMEText(body, "plain", "utf-8"))
+                fname, data = attachment
+                part = MIMEBase("text", "csv")
+                part.set_payload(data)
+                encoders.encode_base64(part)
+                part.add_header(
+                    "Content-Disposition", "attachment", filename=("utf-8", "", fname)
+                )
+                msg.attach(part)
+            else:
+                msg = MIMEText(body, "plain", "utf-8")
             msg["Subject"] = Header(subject, "utf-8")
             msg["From"] = cfg["sender"]
             tos = cfg["to"] if isinstance(cfg["to"], list) else [cfg["to"]]
@@ -701,6 +729,154 @@ class ScannerApp(tk.Tk):
             self.events.put(("log", f"邮件已发送: {subject}"))
         except Exception as e:
             self.events.put(("log", f"邮件发送失败: {type(e).__name__}: {e}"))
+
+    def _daily_state_path(self):
+        return os.path.join(app_dir(), "daily_mail_state.json")
+
+    def _daily_mail_loop(self):
+        while True:
+            try:
+                now = datetime.now()
+                if now.hour == 21 and now.minute < 5:
+                    today = now.strftime("%Y-%m-%d")
+                    try:
+                        state = json.load(open(self._daily_state_path(), encoding="utf-8"))
+                    except Exception:
+                        state = {}
+                    if state.get("last") != today:
+                        state["last"] = today
+                        try:
+                            with open(self._daily_state_path(), "w", encoding="utf-8") as f:
+                                json.dump(state, f, ensure_ascii=False)
+                        except Exception:
+                            pass
+                        self.events.put(("daily_mail", today))
+            except Exception:
+                pass
+            time.sleep(20)
+
+    def _send_digest_now(self):
+        day = datetime.now().strftime("%Y-%m-%d")
+        self._send_daily_digest(day, tag="手动")
+
+    def _send_daily_digest(self, day, tag="21:00"):
+        rows = [r for r in self.all_rows if "倾向" in sc.bet_cell(r)]
+        if not rows:
+            self._append_log(f"{day} {tag} 无建议下注，未发送邮件")
+            return
+        cfg = self.mail_cfg
+        if not cfg.get("enabled") or not all(
+            cfg.get(k) for k in ("sender", "auth", "to")
+        ):
+            self._append_log(f"{day} {tag} 有 {len(rows)} 场建议，但邮箱未配置")
+            return
+        import csv as _csv
+        import io
+
+        buf = io.StringIO()
+        w = _csv.writer(buf)
+        w.writerow(["联赛", "开赛", "比分/状态", "主队", "客队", "下注层"])
+        for r in rows:
+            w.writerow(
+                [
+                    r.get("league", ""),
+                    r.get("time", ""),
+                    sc.score_status(r),
+                    r.get("home", ""),
+                    r.get("away", ""),
+                    sc.bet_cell(r),
+                ]
+            )
+        text = buf.getvalue()
+        subject = f"东风-61洲际导弹 每日建议下注 {day} ({len(rows)}场)"
+        body = f"今日 21:00 建议下注汇总，共 {len(rows)} 场。\n\n" + text
+        fname = f"建议下注_{day}.csv"
+        data = ("\ufeff" + text).encode("utf-8")
+        threading.Thread(
+            target=self._mail_worker,
+            args=(cfg, subject, body, (fname, data)),
+            daemon=True,
+        ).start()
+        self._append_log(f"{day} {tag} 已发送建议下注汇总: {len(rows)} 场")
+
+    def _proxy_cfg_path(self):
+        return os.path.join(app_dir(), "proxy_config.json")
+
+    def _load_proxy_cfg(self):
+        p = self._proxy_cfg_path()
+        if os.path.exists(p):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    return {
+                        "host": str(data.get("host", "127.0.0.1")),
+                        "port": int(data.get("port", 7890)),
+                        "enabled": bool(data.get("enabled", True)),
+                        "prefer": bool(data.get("prefer", True)),
+                    }
+            except Exception:
+                pass
+        return {"host": "127.0.0.1", "port": 7890, "enabled": True, "prefer": True}
+
+    def _open_proxy_settings(self):
+        win = tk.Toplevel(self)
+        win.title("代理设置")
+        win.transient(self)
+        win.resizable(False, False)
+        frm = ttk.Frame(win, padding=10)
+        frm.pack(fill="x")
+        ttk.Label(frm, text="代理地址:").grid(row=0, column=0, sticky="w", pady=4)
+        e_host = ttk.Entry(frm, width=24)
+        e_host.grid(row=0, column=1, pady=4)
+        ttk.Label(frm, text="端口:").grid(row=1, column=0, sticky="w", pady=4)
+        e_port = ttk.Entry(frm, width=10)
+        e_port.grid(row=1, column=1, sticky="w", pady=4)
+        e_host.insert(0, self.proxy_cfg.get("host", "127.0.0.1"))
+        e_port.insert(0, str(self.proxy_cfg.get("port", 7890)))
+        en = tk.BooleanVar(value=self.proxy_cfg.get("enabled", True))
+        pf = tk.BooleanVar(value=self.proxy_cfg.get("prefer", True))
+        ttk.Checkbutton(frm, text="启用代理", variable=en).grid(
+            row=2, column=0, columnspan=2, sticky="w", pady=2
+        )
+        ttk.Checkbutton(frm, text="优先走代理(直连被风控时勾选)", variable=pf).grid(
+            row=3, column=0, columnspan=2, sticky="w", pady=2
+        )
+
+        def save():
+            try:
+                port = int(e_port.get().strip())
+            except ValueError:
+                port = 7890
+            self.proxy_cfg = {
+                "host": e_host.get().strip() or "127.0.0.1",
+                "port": port,
+                "enabled": bool(en.get()),
+                "prefer": bool(pf.get()),
+            }
+            try:
+                with open(self._proxy_cfg_path(), "w", encoding="utf-8") as f:
+                    json.dump(self.proxy_cfg, f, ensure_ascii=False, indent=1)
+            except Exception as e:
+                self._append_log(f"代理配置保存失败: {e}")
+            t.set_proxy(
+                self.proxy_cfg["host"],
+                self.proxy_cfg["port"],
+                self.proxy_cfg["enabled"],
+                self.proxy_cfg["prefer"],
+            )
+            self._append_log(
+                f"代理设置已保存: {self.proxy_cfg['host']}:{self.proxy_cfg['port']} "
+                f"启用={self.proxy_cfg['enabled']} 优先={self.proxy_cfg['prefer']}"
+            )
+            win.destroy()
+
+        btns = ttk.Frame(win)
+        btns.pack(pady=8)
+        ttk.Button(btns, text="保存", command=save).pack(side="left", padx=8)
+        ttk.Button(btns, text="取消", command=win.destroy).pack(side="left", padx=8)
+        win.geometry(f"+{self.winfo_rootx() + 120}+{self.winfo_rooty() + 140}")
+        self.wait_window(win)
 
     def _league_filter_path(self):
         return os.path.join(app_dir(), "league_filter.json")
@@ -887,6 +1063,8 @@ class ScannerApp(tk.Tk):
                     self._render(self.all_rows, set())
                     self._save_history()
                     self._maybe_auto_clear()
+                elif kind == "daily_mail":
+                    self._send_daily_digest(ev[1])
                 elif kind == "passlog":
                     ok_c, err_c, q_c, new_c, cost = ev[1:]
                     self._append_log(

@@ -28,7 +28,7 @@ def main():
     ap.add_argument("--cid", type=int, default=47, help="公司ID (默认 47=平博)")
     ap.add_argument("--cid2", type=int, default=3, help="对照公司ID (默认 3=皇冠)")
     ap.add_argument("--interval", type=int, default=30, help="每轮间隔秒数 (默认 30)")
-    ap.add_argument("--workers", type=int, default=4, help="并发数 (默认 4, 太高会被限流)")
+    ap.add_argument("--workers", type=int, default=2, help="并发数 (默认 2, 太高会被限流)")
     ap.add_argument("--limit", type=int, default=0, help="只扫前 N 场 (0=全部)")
     ap.add_argument("--once", action="store_true", help="只跑一轮")
     ap.add_argument("--csv", default="alerts.csv", help="报警 CSV 输出路径")

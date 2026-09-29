@@ -3,7 +3,11 @@
 
 import os
 import re
+import shutil
 import socket
+import subprocess
+import threading
+import time
 import urllib.request
 
 UA = {
@@ -59,18 +63,147 @@ def _decode(raw):
     return raw.decode("utf-8", errors="replace")
 
 
+_REQ_LOCK = threading.Lock()
+_LAST_REQ = {"t": 0.0}
+_MIN_GAP = 0.25
+
+_PROXY_CFG = {"host": "127.0.0.1", "port": 7890, "enabled": True, "prefer": False}
+
+
+def set_proxy(host=None, port=None, enabled=True, prefer=False):
+    if host:
+        _PROXY_CFG["host"] = str(host).strip()
+    try:
+        if port:
+            _PROXY_CFG["port"] = int(port)
+    except (TypeError, ValueError):
+        pass
+    _PROXY_CFG["enabled"] = bool(enabled)
+    _PROXY_CFG["prefer"] = bool(prefer)
+
+
+def proxy_url():
+    return f"http://{_PROXY_CFG['host']}:{_PROXY_CFG['port']}"
+
+
+def _throttle():
+    with _REQ_LOCK:
+        now = time.time()
+        wait = _MIN_GAP - (now - _LAST_REQ["t"])
+        if wait > 0:
+            time.sleep(wait)
+        _LAST_REQ["t"] = time.time()
+
+
+def _proxy_alive():
+    try:
+        s = socket.create_connection(
+            (_PROXY_CFG["host"], int(_PROXY_CFG["port"])), timeout=0.4
+        )
+        s.close()
+        return True
+    except OSError:
+        return False
+
+
+_CURL = shutil.which("curl.exe") or shutil.which("curl")
+try:
+    from curl_cffi import requests as _cffi_requests
+except Exception:
+    _cffi_requests = None
+
+
+def _cffi_fetch(url, timeout=25, proxy=None):
+    kwargs = {
+        "impersonate": "chrome",
+        "timeout": int(timeout),
+        "headers": {
+            "Referer": "https://www.titan007.com/",
+            "Accept-Language": "zh-CN,zh;q=0.9",
+        },
+    }
+    if proxy:
+        kwargs["proxies"] = {"http": proxy, "https": proxy}
+    r = _cffi_requests.get(url, **kwargs)
+    if r.status_code >= 400:
+        raise RuntimeError(f"HTTP {r.status_code}")
+    return _decode(r.content)
+
+
+def _curl_fetch(url, timeout=25, proxy=None):
+    args = [
+        _CURL,
+        "-sS",
+        "--max-time",
+        str(int(timeout)),
+        "-A",
+        UA["User-Agent"],
+        "-H",
+        "Accept-Language: zh-CN,zh;q=0.9",
+        "-H",
+        "Referer: https://www.titan007.com/",
+        "-w",
+        "\n__HTTP__%{http_code}",
+    ]
+    if proxy:
+        args += ["-x", proxy]
+    args.append(url)
+    r = subprocess.run(args, capture_output=True, timeout=int(timeout) + 5)
+    if r.returncode != 0:
+        raise RuntimeError(f"curl exit {r.returncode}: {r.stderr[:120]!r}")
+    out = r.stdout
+    marker = b"\n__HTTP__"
+    idx = out.rfind(marker)
+    if idx < 0:
+        raise RuntimeError("curl status parse failed")
+    code = int((out[idx + len(marker):] or b"0").strip() or 0)
+    body = out[:idx]
+    if code >= 400:
+        raise RuntimeError(f"HTTP {code}")
+    return _decode(body)
+
+
 def fetch_text(url, timeout=25):
+    _throttle()
+    if _cffi_requests is not None:
+        try:
+            return _cffi_fetch(url, timeout)
+        except Exception:
+            pass
+        if _PROXY_CFG["enabled"] and _proxy_alive():
+            try:
+                return _cffi_fetch(url, timeout, proxy_url())
+            except Exception:
+                pass
+    if _CURL:
+        try:
+            return _curl_fetch(url, timeout)
+        except Exception:
+            pass
+        if _PROXY_CFG["enabled"] and _proxy_alive():
+            try:
+                return _curl_fetch(url, timeout, proxy_url())
+            except Exception:
+                pass
+    return _urllib_fetch(url, timeout)
+
+
+def _urllib_fetch(url, timeout=25):
     req = urllib.request.Request(url, headers=UA)
     last_err = None
     proxies = urllib.request.getproxies()
+    custom = []
+    if _PROXY_CFG["enabled"] and _proxy_alive():
+        custom = [("custom", min(timeout, 10))]
     if proxies:
-        attempts = (("default", timeout), ("direct", timeout))
+        attempts = [("default", timeout)] + custom + [("direct", timeout)]
+    elif _PROXY_CFG["prefer"] and custom:
+        attempts = custom + [("direct", min(timeout, 8))]
     else:
-        attempts = [("direct", min(timeout, 8))]
-        if _proxy_alive():
-            attempts.append(("proxy7890", min(timeout, 8)))
+        attempts = [("direct", min(timeout, 8))] + custom
     for mode, tmo in attempts:
         try:
+            _throttle()
             if mode == "default":
                 resp = urllib.request.urlopen(req, timeout=timeout)
             elif mode == "direct":
@@ -81,10 +214,7 @@ def fetch_text(url, timeout=25):
             else:
                 opener = urllib.request.build_opener(
                     urllib.request.ProxyHandler(
-                        {
-                            "http": "http://127.0.0.1:7890",
-                            "https": "http://127.0.0.1:7890",
-                        }
+                        {"http": proxy_url(), "https": proxy_url()}
                     )
                 )
                 resp = opener.open(req, timeout=tmo)
@@ -99,15 +229,6 @@ def fetch_text(url, timeout=25):
             ):
                 break
     raise last_err
-
-
-def _proxy_alive():
-    try:
-        s = socket.create_connection(("127.0.0.1", 7890), timeout=0.4)
-        s.close()
-        return True
-    except OSError:
-        return False
 
 
 def fetch_ids():
@@ -219,10 +340,21 @@ def parse_line(txt):
     return None
 
 
+AH_MAP.setdefault("平手", 0.0)
+for _k, _v in list(AH_MAP.items()):
+    if _k.startswith("受"):
+        continue
+    AH_MAP.setdefault("受" + _k, -_v)
+    AH_MAP.setdefault("受让" + _k, -_v)
+
+
 def parse_ah_line(txt):
     txt = (txt or "").replace(" ", "")
     if not txt:
         return None
+    txt = txt.replace("受让", "受")
+    if txt.startswith("让"):
+        txt = txt[1:]
     if txt in AH_MAP:
         return AH_MAP[txt]
     m = re.match(r"^受(.+)$", txt)
