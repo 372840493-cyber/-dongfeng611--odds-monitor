@@ -198,9 +198,6 @@ class ScannerApp(tk.Tk):
         ttk.Button(cfg, text="联赛筛选", command=self._open_league_filter).pack(
             side="left", padx=4
         )
-        ttk.Button(cfg, text="代理设置", command=self._open_proxy_settings).pack(
-            side="left", padx=4
-        )
         self.all_leagues_var = tk.BooleanVar(value=self.all_leagues)
         ttk.Checkbutton(
             cfg,
@@ -289,6 +286,8 @@ class ScannerApp(tk.Tk):
         self.worker.start()
         self.score_thread = threading.Thread(target=self._score_loop, daemon=True)
         self.score_thread.start()
+        self.daily_thread = threading.Thread(target=self._daily_mail_loop, daemon=True)
+        self.daily_thread.start()
 
     def stop(self):
         self.running = False
@@ -698,9 +697,25 @@ class ScannerApp(tk.Tk):
             daemon=True,
         ).start()
 
-    def _mail_worker(self, cfg, subject, body):
+    def _mail_worker(self, cfg, subject, body, attachment=None):
         try:
-            msg = MIMEText(body, "plain", "utf-8")
+            if attachment:
+                from email.mime.base import MIMEBase
+                from email.mime.multipart import MIMEMultipart
+                from email import encoders
+
+                msg = MIMEMultipart()
+                msg.attach(MIMEText(body, "plain", "utf-8"))
+                fname, data = attachment
+                part = MIMEBase("text", "csv")
+                part.set_payload(data)
+                encoders.encode_base64(part)
+                part.add_header(
+                    "Content-Disposition", "attachment", filename=("utf-8", "", fname)
+                )
+                msg.attach(part)
+            else:
+                msg = MIMEText(body, "plain", "utf-8")
             msg["Subject"] = Header(subject, "utf-8")
             msg["From"] = cfg["sender"]
             tos = cfg["to"] if isinstance(cfg["to"], list) else [cfg["to"]]
@@ -711,6 +726,71 @@ class ScannerApp(tk.Tk):
             self.events.put(("log", f"邮件已发送: {subject}"))
         except Exception as e:
             self.events.put(("log", f"邮件发送失败: {type(e).__name__}: {e}"))
+
+    def _daily_state_path(self):
+        return os.path.join(app_dir(), "daily_mail_state.json")
+
+    def _daily_mail_loop(self):
+        while True:
+            try:
+                now = datetime.now()
+                if now.hour == 21 and now.minute < 5:
+                    today = now.strftime("%Y-%m-%d")
+                    try:
+                        state = json.load(open(self._daily_state_path(), encoding="utf-8"))
+                    except Exception:
+                        state = {}
+                    if state.get("last") != today:
+                        state["last"] = today
+                        try:
+                            with open(self._daily_state_path(), "w", encoding="utf-8") as f:
+                                json.dump(state, f, ensure_ascii=False)
+                        except Exception:
+                            pass
+                        self.events.put(("daily_mail", today))
+            except Exception:
+                pass
+            time.sleep(20)
+
+    def _send_daily_digest(self, day):
+        rows = [r for r in self.all_rows if "倾向" in sc.bet_cell(r)]
+        if not rows:
+            self._append_log(f"{day} 21:00 无建议下注，未发送邮件")
+            return
+        cfg = self.mail_cfg
+        if not cfg.get("enabled") or not all(
+            cfg.get(k) for k in ("sender", "auth", "to")
+        ):
+            self._append_log(f"{day} 21:00 有 {len(rows)} 场建议，但邮箱未配置")
+            return
+        import csv as _csv
+        import io
+
+        buf = io.StringIO()
+        w = _csv.writer(buf)
+        w.writerow(["联赛", "开赛", "比分/状态", "主队", "客队", "下注层"])
+        for r in rows:
+            w.writerow(
+                [
+                    r.get("league", ""),
+                    r.get("time", ""),
+                    sc.score_status(r),
+                    r.get("home", ""),
+                    r.get("away", ""),
+                    sc.bet_cell(r),
+                ]
+            )
+        text = buf.getvalue()
+        subject = f"东风-61洲际导弹 每日建议下注 {day} ({len(rows)}场)"
+        body = f"今日 21:00 建议下注汇总，共 {len(rows)} 场。\n\n" + text
+        fname = f"建议下注_{day}.csv"
+        data = ("\ufeff" + text).encode("utf-8")
+        threading.Thread(
+            target=self._mail_worker,
+            args=(cfg, subject, body, (fname, data)),
+            daemon=True,
+        ).start()
+        self._append_log(f"{day} 21:00 已发送建议下注汇总: {len(rows)} 场")
 
     def _proxy_cfg_path(self):
         return os.path.join(app_dir(), "proxy_config.json")
@@ -976,6 +1056,8 @@ class ScannerApp(tk.Tk):
                     self._render(self.all_rows, set())
                     self._save_history()
                     self._maybe_auto_clear()
+                elif kind == "daily_mail":
+                    self._send_daily_digest(ev[1])
                 elif kind == "passlog":
                     ok_c, err_c, q_c, new_c, cost = ev[1:]
                     self._append_log(
