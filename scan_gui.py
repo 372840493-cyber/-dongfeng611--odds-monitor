@@ -761,6 +761,12 @@ class ScannerApp(tk.Tk):
 
     def _send_daily_digest(self, day, tag="21:00"):
         rows = [r for r in self.all_rows if "倾向" in sc.bet_cell(r)]
+        rows.sort(
+            key=lambda r: (
+                r.get("kickoff") or "9999-99-99 99:99",
+                r.get("time") or "",
+            )
+        )
         if not rows:
             self._append_log(f"{day} {tag} 无建议下注，未发送邮件")
             return
