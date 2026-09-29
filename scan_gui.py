@@ -189,6 +189,9 @@ class ScannerApp(tk.Tk):
         ttk.Checkbutton(
             cfg, text="完场自动清空", variable=self.auto_clear_var
         ).pack(side="left", padx=4)
+        ttk.Button(cfg, text="汇总发送", command=self._send_digest_now).pack(
+            side="left", padx=4
+        )
         ttk.Button(cfg, text="邮箱通知", command=self._open_mail_settings).pack(
             side="left", padx=4
         )
@@ -752,16 +755,20 @@ class ScannerApp(tk.Tk):
                 pass
             time.sleep(20)
 
-    def _send_daily_digest(self, day):
+    def _send_digest_now(self):
+        day = datetime.now().strftime("%Y-%m-%d")
+        self._send_daily_digest(day, tag="手动")
+
+    def _send_daily_digest(self, day, tag="21:00"):
         rows = [r for r in self.all_rows if "倾向" in sc.bet_cell(r)]
         if not rows:
-            self._append_log(f"{day} 21:00 无建议下注，未发送邮件")
+            self._append_log(f"{day} {tag} 无建议下注，未发送邮件")
             return
         cfg = self.mail_cfg
         if not cfg.get("enabled") or not all(
             cfg.get(k) for k in ("sender", "auth", "to")
         ):
-            self._append_log(f"{day} 21:00 有 {len(rows)} 场建议，但邮箱未配置")
+            self._append_log(f"{day} {tag} 有 {len(rows)} 场建议，但邮箱未配置")
             return
         import csv as _csv
         import io
@@ -790,7 +797,7 @@ class ScannerApp(tk.Tk):
             args=(cfg, subject, body, (fname, data)),
             daemon=True,
         ).start()
-        self._append_log(f"{day} 21:00 已发送建议下注汇总: {len(rows)} 场")
+        self._append_log(f"{day} {tag} 已发送建议下注汇总: {len(rows)} 场")
 
     def _proxy_cfg_path(self):
         return os.path.join(app_dir(), "proxy_config.json")
