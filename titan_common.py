@@ -107,6 +107,27 @@ def _proxy_alive():
 
 
 _CURL = shutil.which("curl.exe") or shutil.which("curl")
+try:
+    from curl_cffi import requests as _cffi_requests
+except Exception:
+    _cffi_requests = None
+
+
+def _cffi_fetch(url, timeout=25, proxy=None):
+    kwargs = {
+        "impersonate": "chrome",
+        "timeout": int(timeout),
+        "headers": {
+            "Referer": "https://www.titan007.com/",
+            "Accept-Language": "zh-CN,zh;q=0.9",
+        },
+    }
+    if proxy:
+        kwargs["proxies"] = {"http": proxy, "https": proxy}
+    r = _cffi_requests.get(url, **kwargs)
+    if r.status_code >= 400:
+        raise RuntimeError(f"HTTP {r.status_code}")
+    return _decode(r.content)
 
 
 def _curl_fetch(url, timeout=25, proxy=None):
@@ -144,6 +165,16 @@ def _curl_fetch(url, timeout=25, proxy=None):
 
 def fetch_text(url, timeout=25):
     _throttle()
+    if _cffi_requests is not None:
+        try:
+            return _cffi_fetch(url, timeout)
+        except Exception:
+            pass
+        if _PROXY_CFG["enabled"] and _proxy_alive():
+            try:
+                return _cffi_fetch(url, timeout, proxy_url())
+            except Exception:
+                pass
     if _CURL:
         try:
             return _curl_fetch(url, timeout)
