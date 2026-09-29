@@ -4,4 +4,10 @@ dist/
 __pycache__/
 *.pyc
 notes.json
+track_history.json
+email_config.json
+league_filter.json
+app_settings.json
+proxy_config.json
+daily_mail_state.json
 *.spec
