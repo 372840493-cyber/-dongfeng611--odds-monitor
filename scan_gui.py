@@ -524,9 +524,34 @@ class ScannerApp(tk.Tk):
                                 _cmp = f"皇冠低{sc.fmt_line(abs(_d))}"
                         else:
                             _cmp = "皇冠无数据"
+                        _al, _a2 = r.get("ah_cur_line"), r.get("c2ah_cur_line")
+                        if _al is not None and _a2 is not None:
+                            _ad = round(_a2 - _al, 3)
+                            if abs(_ad) < 1e-9:
+                                _acmp = "与平博同盘"
+                            elif _ad > 0:
+                                _acmp = f"皇冠高{sc.fmt_line(_ad)}"
+                            else:
+                                _acmp = f"皇冠低{sc.fmt_line(abs(_ad))}"
+                        else:
+                            _acmp = "皇冠无数据"
+                        def _w(a, b):
+                            return f"{a}/{b}" if a is not None and b is not None else "-"
+
+                        _ah_txt = "无数据"
+                        if _al is not None:
+                            _ah_txt = (
+                                f"平博 {sc.fmt_ah_line(_al)} 水{_w(r.get('ah_cur_water_h'), r.get('ah_cur_water_a'))}"
+                            )
+                            if _a2 is not None:
+                                _ah_txt += (
+                                    f" | 皇冠 {sc.fmt_ah_line(_a2)} "
+                                    f"水{_w(r.get('c2ah_cur_water_h'), r.get('c2ah_cur_water_a'))}（{_acmp}）"
+                                )
                         extra = (
                             f"\n当前倾向: {cur_tend}\n"
-                            f"当前盘口: 平博 {sc.fmt_odds(_cl, r.get('cur_big'), r.get('cur_small'))}"
+                            f"当前亚盘: {_ah_txt}\n"
+                            f"当前大小球(仅参考): 平博 {sc.fmt_odds(_cl, r.get('cur_big'), r.get('cur_small'))}"
                             f" | 皇冠 {sc.fmt_odds(_c2, r.get('c2_cur_big'), r.get('c2_cur_small'))}"
                             f"（{_cmp}）"
                         )
