@@ -503,15 +503,28 @@ class ScannerApp(tk.Tk):
                 except Exception:
                     r = None
                 if r and not r.get("error"):
+                    cur_tend = sc.bet_cell(r)
+
+                    def _norm(x):
+                        return re.sub(r"[✔✘\s]|走盘", "", str(x))
+
+                    if _norm(cur_tend) == _norm(snap):
+                        check_txt = "与之前最终倾向一致"
+                        extra = ""
+                    else:
+                        check_txt = "已变化(注意)"
+                        extra = (
+                            f"\n当前倾向: {cur_tend}\n"
+                            f"当前盘口: {sc.fmt_odds(r.get('cur_line'), r.get('cur_big'), r.get('cur_small'))}"
+                            f" | 皇冠 {sc.fmt_odds(r.get('c2_cur_line'), r.get('c2_cur_big'), r.get('c2_cur_small'))}"
+                        )
                     body = (
                         f"开赛时间: {ko}\n"
                         f"联赛: {info.get('league', '')}\n"
                         f"主队: {info.get('home', '')}\n"
                         f"客队: {info.get('away', '')}\n"
                         f"原始倾向: {snap}\n"
-                        f"当前盘口: {sc.fmt_odds(r.get('cur_line'), r.get('cur_big'), r.get('cur_small'))}"
-                        f" | 皇冠 {sc.fmt_odds(r.get('c2_cur_line'), r.get('c2_cur_big'), r.get('c2_cur_small'))}\n"
-                        f"当前亚盘: {sc.fmt_ah_pair(r, 'ah')}\n"
+                        f"开赛前15分钟复查: {check_txt}{extra}\n"
                     )
                     subject = (
                         f"临场提醒(15分钟): {info.get('league', '')} "
