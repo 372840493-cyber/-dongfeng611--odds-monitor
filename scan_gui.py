@@ -513,10 +513,22 @@ class ScannerApp(tk.Tk):
                         extra = ""
                     else:
                         check_txt = "已变化(注意)"
+                        _cl, _c2 = r.get("cur_line"), r.get("c2_cur_line")
+                        if _cl is not None and _c2 is not None:
+                            _d = round(_c2 - _cl, 3)
+                            if abs(_d) < 1e-9:
+                                _cmp = "与平博同盘"
+                            elif _d > 0:
+                                _cmp = f"皇冠高{sc.fmt_line(_d)}"
+                            else:
+                                _cmp = f"皇冠低{sc.fmt_line(abs(_d))}"
+                        else:
+                            _cmp = "皇冠无数据"
                         extra = (
                             f"\n当前倾向: {cur_tend}\n"
-                            f"当前盘口: {sc.fmt_odds(r.get('cur_line'), r.get('cur_big'), r.get('cur_small'))}"
-                            f" | 皇冠 {sc.fmt_odds(r.get('c2_cur_line'), r.get('c2_cur_big'), r.get('c2_cur_small'))}"
+                            f"当前盘口: 平博 {sc.fmt_odds(_cl, r.get('cur_big'), r.get('cur_small'))}"
+                            f" | 皇冠 {sc.fmt_odds(_c2, r.get('c2_cur_big'), r.get('c2_cur_small'))}"
+                            f"（{_cmp}）"
                         )
                     body = (
                         f"开赛时间: {ko}\n"
