@@ -574,14 +574,36 @@ class ScannerApp(tk.Tk):
         )
         self._append_log(f"已删除场次: {name}")
 
+    def _backup_history(self):
+        src = self._history_path()
+        if not os.path.exists(src):
+            return None
+        import shutil as _shutil
+
+        bdir = os.path.join(app_dir(), "backups")
+        os.makedirs(bdir, exist_ok=True)
+        dst = os.path.join(
+            bdir, f"track_history_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        )
+        try:
+            _shutil.copy2(src, dst)
+            self._append_log(f"已备份历史: {dst}")
+            return dst
+        except Exception as e:
+            self._append_log(f"历史备份失败: {e}")
+            return None
+
     def _delete_all(self):
         if not self.all_rows:
             self._append_log("当前没有可删除的记录")
             return
         if not messagebox.askyesno(
-            "全选删除", f"确定要删除全部 {len(self.all_rows)} 条记录吗？此操作不可恢复。"
+            "全选删除",
+            f"确定要删除全部 {len(self.all_rows)} 条记录吗？"
+            "（删除前会自动备份历史文件）",
         ):
             return
+        self._backup_history()
         self.all_rows = []
         self.live_sids.clear()
         self.live_meta.clear()
@@ -594,6 +616,7 @@ class ScannerApp(tk.Tk):
         self._append_log("已全选删除: 全部记录已清空")
 
     def _clear_finished(self):
+        self._backup_history()
         before = len(self.all_rows)
         self.all_rows = [
             r
