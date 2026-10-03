@@ -185,6 +185,9 @@ class ScannerApp(tk.Tk):
         ttk.Button(cfg, text="删除选中", command=self._delete_selected).pack(
             side="left", padx=4
         )
+        ttk.Button(cfg, text="全选删除", command=self._delete_all).pack(
+            side="left", padx=4
+        )
         self.auto_clear_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(
             cfg, text="完场自动清空", variable=self.auto_clear_var
@@ -570,6 +573,25 @@ class ScannerApp(tk.Tk):
             else sid
         )
         self._append_log(f"已删除场次: {name}")
+
+    def _delete_all(self):
+        if not self.all_rows:
+            self._append_log("当前没有可删除的记录")
+            return
+        if not messagebox.askyesno(
+            "全选删除", f"确定要删除全部 {len(self.all_rows)} 条记录吗？此操作不可恢复。"
+        ):
+            return
+        self.all_rows = []
+        self.live_sids.clear()
+        self.live_meta.clear()
+        self.live_info.clear()
+        self.tend_sounded.clear()
+        self._rechecked.clear()
+        self._score_verified.clear()
+        self._render([], set())
+        self._save_history()
+        self._append_log("已全选删除: 全部记录已清空")
 
     def _clear_finished(self):
         before = len(self.all_rows)
