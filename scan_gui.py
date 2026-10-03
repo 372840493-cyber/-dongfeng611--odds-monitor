@@ -473,7 +473,7 @@ class ScannerApp(tk.Tk):
                     if self._last_live.get(sid) != (score, ""):
                         self._last_live[sid] = (score, "")
                         self.events.put(("live", sid, score, ""))
-            # 开赛前 10 分钟最后复查一次倾向
+            # 开赛前 15 分钟最后复查一次倾向
             now2 = datetime.now()
             for sid, info in list(self.live_info.items()):
                 if sid in self._rechecked:
@@ -485,7 +485,7 @@ class ScannerApp(tk.Tk):
                     ko_dt = datetime.strptime(ko, "%Y-%m-%d %H:%M")
                 except (TypeError, ValueError):
                     continue
-                if now2 < ko_dt - timedelta(minutes=10) or now2 >= ko_dt:
+                if now2 < ko_dt - timedelta(minutes=15) or now2 >= ko_dt:
                     continue
                 self._rechecked.add(sid)
                 try:
