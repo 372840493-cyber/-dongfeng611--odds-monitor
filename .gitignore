@@ -11,3 +11,4 @@ app_settings.json
 proxy_config.json
 daily_mail_state.json
 *.spec
+backups/

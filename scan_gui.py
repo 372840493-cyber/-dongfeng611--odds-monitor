@@ -77,6 +77,7 @@ class ScannerApp(tk.Tk):
         self.live_info = {}
         self._rechecked = set()
         self._score_verified = set()
+        self._prematch_notified = set()
         self.events = queue.Queue()
         self.alerted = set()
         self.skip = set()
@@ -265,6 +266,7 @@ class ScannerApp(tk.Tk):
         )
         self._rechecked.clear()
         self._score_verified.clear()
+        self._prematch_notified.clear()
         for r in self.all_rows:
             sid = str(r.get("sid"))
             self.live_info[sid] = {
@@ -473,6 +475,60 @@ class ScannerApp(tk.Tk):
                     if self._last_live.get(sid) != (score, ""):
                         self._last_live[sid] = (score, "")
                         self.events.put(("live", sid, score, ""))
+            # 已锁定的场次: 开赛前15分钟发临场提醒(原始倾向+当前盘口)
+            for sid, info in list(self.live_info.items()):
+                snap = info.get("snapshot")
+                if not snap or sid in self._prematch_notified:
+                    continue
+                ko = info.get("kickoff")
+                if not ko:
+                    continue
+                try:
+                    ko_dt = datetime.strptime(ko, "%Y-%m-%d %H:%M")
+                except (TypeError, ValueError):
+                    continue
+                if not (ko_dt - timedelta(minutes=15) <= now2 < ko_dt):
+                    continue
+                self._prematch_notified.add(sid)
+                try:
+                    m = {
+                        "sid": sid,
+                        "league": info.get("league", ""),
+                        "home": info.get("home", ""),
+                        "away": info.get("away", ""),
+                        "time": info.get("time", ""),
+                        "kickoff": ko,
+                    }
+                    r = sc.fetch_one(m, cid=self.cid, cid2=3, timeout=12)
+                except Exception:
+                    r = None
+                if r and not r.get("error"):
+                    body = (
+                        f"开赛时间: {ko}\n"
+                        f"联赛: {info.get('league', '')}\n"
+                        f"主队: {info.get('home', '')}\n"
+                        f"客队: {info.get('away', '')}\n"
+                        f"原始倾向: {snap}\n"
+                        f"当前盘口: {sc.fmt_odds(r.get('cur_line'), r.get('cur_big'), r.get('cur_small'))}"
+                        f" | 皇冠 {sc.fmt_odds(r.get('c2_cur_line'), r.get('c2_cur_big'), r.get('c2_cur_small'))}\n"
+                        f"当前亚盘: {sc.fmt_ah_pair(r, 'ah')}\n"
+                    )
+                    subject = (
+                        f"临场提醒(15分钟): {info.get('league', '')} "
+                        f"{info.get('home', '')} vs {info.get('away', '')}"
+                    )
+                    cfg = self.mail_cfg
+                    if cfg.get("enabled") and all(
+                        cfg.get(k) for k in ("sender", "auth", "to")
+                    ):
+                        threading.Thread(
+                            target=self._mail_worker,
+                            args=(cfg, subject, body),
+                            daemon=True,
+                        ).start()
+                    self.events.put(("log", f"临场提醒已发送: {subject}"))
+                else:
+                    self.events.put(("log", f"临场提醒取数失败: {sid}"))
             # 开赛前 15 分钟最后复查一次倾向
             now2 = datetime.now()
             for sid, info in list(self.live_info.items()):
@@ -611,6 +667,7 @@ class ScannerApp(tk.Tk):
         self.tend_sounded.clear()
         self._rechecked.clear()
         self._score_verified.clear()
+        self._prematch_notified.clear()
         self._render([], set())
         self._save_history()
         self._append_log("已全选删除: 全部记录已清空")
@@ -1079,6 +1136,10 @@ class ScannerApp(tk.Tk):
                     ]
                     if old_snap:
                         r["bet_snapshot"] = old_snap
+                    if r.get("bet_snapshot"):
+                        self.live_info.setdefault(r["sid"], {})[
+                            "snapshot"
+                        ] = r["bet_snapshot"]
                     self.all_rows.append(r)
                     self._render(self.all_rows, {r["sid"]} if is_new else set())
                     self._save_history()
