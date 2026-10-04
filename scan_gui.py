@@ -517,6 +517,7 @@ class ScannerApp(tk.Tk):
                     self.live_info.setdefault(sid, {})["t15_crown"] = r.get(
                         "c2_cur_line"
                     )
+                    self.live_info.setdefault(sid, {})["t15_sig"] = sc.ou_signal(r)
                     cur_tend = sc.betting_reference(r)
 
                     def _norm(x):
@@ -880,6 +881,8 @@ class ScannerApp(tk.Tk):
                 "t15": b_t15,
                 "lock": b_lock,
                 "last": b_last,
+                "sig_t15": info.get("t15_sig"),
+                "sig_lock": row.get("lock_sig") or row.get("lock2_sig"),
             }
         )
         self.ou_recorded.add(sid)
@@ -931,6 +934,33 @@ class ScannerApp(tk.Tk):
             if not any_row:
                 lines.append("  暂无样本")
             lines.append("")
+        for label_txt, kw in (
+            ("升盘+大升水(升盘阻大)", "升盘阻大"),
+            ("降盘+大降水(可能诱大)", "诱大"),
+        ):
+            n = big = small = w = l = p = 0
+            for rec in self.ou_stats:
+                sig = (rec.get("sig_t15") or rec.get("sig_lock") or "")
+                if kw not in sig:
+                    continue
+                n += 1
+                if rec.get("big25") == "大":
+                    big += 1
+                else:
+                    small += 1
+                rp = (rec.get("t15") or rec.get("lock") or {}).get("result")
+                if rp == "大":
+                    w += 1
+                elif rp == "小":
+                    l += 1
+                else:
+                    p += 1
+            pct = (100.0 * big / n) if n else 0
+            lines.append(
+                f"【专项】{label_txt}: {n} 场 | 总进球≥3 {big} / ≤2 {small} | "
+                f"大球占比 {pct:.0f}% | 对主盘 大{w}/小{l}/走{p}"
+            )
+        lines.append("")
         lines.append("最近 20 场明细:")
         for rec in self.ou_stats[-20:]:
             base = rec.get("t15") or rec.get("lock") or rec.get("last") or {}
@@ -1394,6 +1424,8 @@ class ScannerApp(tk.Tk):
                             "lock_crown_line",
                             "lock2_pin_line",
                             "lock2_crown_line",
+                            "lock_sig",
+                            "lock2_sig",
                         ):
                             if old_row.get(_k) is not None:
                                 r[_k] = old_row[_k]
@@ -1419,6 +1451,7 @@ class ScannerApp(tk.Tk):
                         r["bet_snapshot"] = cur_txt
                         r["lock_pin_line"] = r.get("cur_line")
                         r["lock_crown_line"] = r.get("c2_cur_line")
+                        r["lock_sig"] = sc.ou_signal(r)
                         self._save_history()
                     elif has_tend and not r.get("bet_snapshot2"):
                         def _mkt(x):
@@ -1432,6 +1465,7 @@ class ScannerApp(tk.Tk):
                             r["bet_snapshot2"] = cur_txt
                             r["lock2_pin_line"] = r.get("cur_line")
                             r["lock2_crown_line"] = r.get("c2_cur_line")
+                            r["lock2_sig"] = sc.ou_signal(r)
                             self._save_history()
                             self._append_log(
                                 f"已追加参考倾向: {r.get('league', '')} "
