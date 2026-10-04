@@ -1219,11 +1219,9 @@ class ScannerApp(tk.Tk):
                 from email import encoders
 
                 msg = MIMEMultipart()
+                # 有彩色正文时只发 HTML: 避免邮箱客户端挑到纯文本版而丢掉颜色
                 if html_body:
-                    alt = MIMEMultipart("alternative")
-                    alt.attach(MIMEText(body, "plain", "utf-8"))
-                    alt.attach(MIMEText(html_body, "html", "utf-8"))
-                    msg.attach(alt)
+                    msg.attach(MIMEText(html_body, "html", "utf-8"))
                 else:
                     msg.attach(MIMEText(body, "plain", "utf-8"))
                 fname, data = attachment
@@ -1235,7 +1233,10 @@ class ScannerApp(tk.Tk):
                 )
                 msg.attach(part)
             else:
-                msg = MIMEText(body, "plain", "utf-8")
+                if html_body:
+                    msg = MIMEText(html_body, "html", "utf-8")
+                else:
+                    msg = MIMEText(body, "plain", "utf-8")
             msg["Subject"] = Header(subject, "utf-8")
             msg["From"] = cfg["sender"]
             tos = cfg["to"] if isinstance(cfg["to"], list) else [cfg["to"]]
@@ -1348,19 +1349,21 @@ class ScannerApp(tk.Tk):
             elif "✘" in cell:
                 color, mark = "#000000", " ✘"
             else:
-                color, mark = "#333333", ""
-            style = f"color:{color};" + ("font-weight:bold;" if mark else "")
+                color, mark = "#222222", ""
+            if mark:
+                # font+b 兼容性最好(网页邮箱/手机邮箱都能上色)
+                open_tag = f'<font color="{color}"><b>'
+                close_tag = "</b></font>"
+            else:
+                open_tag = close_tag = ""
             lines.append(
                 ",".join(
                     [
                         esc(r.get("league")),
                         esc(r.get("time")),
                         esc(sc.score_status(r)),
-                        f'<span style="{style}">{esc(r.get("home"))}</span>',
-                        (
-                            f'<span style="{style}">'
-                            f'{esc(r.get("away"))}{mark}</span>'
-                        ),
+                        f'{open_tag}{esc(r.get("home"))}{close_tag}',
+                        f'{open_tag}{esc(r.get("away"))}{mark}{close_tag}',
                         esc(cell),
                     ]
                 )
