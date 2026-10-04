@@ -66,7 +66,7 @@ class ScannerApp(tk.Tk):
             "东风‑61 洲际导弹  -作者：程序猿虾"
             "（本软件只提供数据参考，禁止非法赌博行为，如有违法行为后果自负！）"
         )
-        self.geometry("1560x920")
+        self.geometry("1250x920")
         self.running = False
         self.stop_ev = threading.Event()
         self.worker = None
@@ -174,10 +174,12 @@ class ScannerApp(tk.Tk):
         self.btn_start.pack(side="left", padx=6)
         self.btn_stop = ttk.Button(cfg, text="停止", command=self.stop, state="disabled")
         self.btn_stop.pack(side="left", padx=6)
-        ttk.Button(cfg, text="导出CSV", command=self.export_csv).pack(side="left", padx=6)
-        ttk.Label(cfg, text="提示音:").pack(side="left")
+        cfg2 = ttk.Frame(self, padding=(8, 0, 8, 4))
+        cfg2.pack(fill="x")
+        ttk.Button(cfg2, text="导出CSV", command=self.export_csv).pack(side="left", padx=6)
+        ttk.Label(cfg2, text="提示音:").pack(side="left")
         self.sound_cb = ttk.Combobox(
-            cfg,
+            cfg2,
             values=("无", "系统提示", "双声高音(默认)", "自定义WAV"),
             width=13,
             state="readonly",
@@ -185,37 +187,37 @@ class ScannerApp(tk.Tk):
         self.sound_cb.set(self.sound_mode)
         self.sound_cb.pack(side="left", padx=(2, 8))
         self.sound_cb.bind("<<ComboboxSelected>>", self._on_sound_select)
-        ttk.Button(cfg, text="清空已完赛", command=self._clear_finished).pack(
+        ttk.Button(cfg2, text="清空已完赛", command=self._clear_finished).pack(
             side="left", padx=4
         )
-        ttk.Button(cfg, text="删除选中", command=self._delete_selected).pack(
+        ttk.Button(cfg2, text="删除选中", command=self._delete_selected).pack(
             side="left", padx=4
         )
-        ttk.Button(cfg, text="全选删除", command=self._delete_all).pack(
+        ttk.Button(cfg2, text="全选删除", command=self._delete_all).pack(
             side="left", padx=4
         )
         self.auto_clear_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(
             cfg, text="完场自动清空", variable=self.auto_clear_var
         ).pack(side="left", padx=4)
-        ttk.Button(cfg, text="汇总发送", command=self._send_digest_now).pack(
+        ttk.Button(cfg2, text="汇总发送", command=self._send_digest_now).pack(
             side="left", padx=4
         )
-        ttk.Button(cfg, text="邮箱通知", command=self._open_mail_settings).pack(
+        ttk.Button(cfg2, text="邮箱通知", command=self._open_mail_settings).pack(
             side="left", padx=4
         )
-        ttk.Button(cfg, text="胜率统计", command=self._show_winrate).pack(
+        ttk.Button(cfg2, text="胜率统计", command=self._show_winrate).pack(
             side="left", padx=4
         )
-        ttk.Button(cfg, text="对比统计", command=self._show_ou_stats).pack(
+        ttk.Button(cfg2, text="对比统计", command=self._show_ou_stats).pack(
             side="left", padx=4
         )
-        ttk.Button(cfg, text="联赛筛选", command=self._open_league_filter).pack(
+        ttk.Button(cfg2, text="联赛筛选", command=self._open_league_filter).pack(
             side="left", padx=4
         )
         self.all_leagues_var = tk.BooleanVar(value=self.all_leagues)
         ttk.Checkbutton(
-            cfg,
+            cfg2,
             text="全联赛(不过滤)",
             variable=self.all_leagues_var,
             command=self._toggle_all_leagues,
