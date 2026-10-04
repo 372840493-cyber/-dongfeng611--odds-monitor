@@ -52,7 +52,6 @@ class ScannerApp(tk.Tk):
         ("c2open", "皇冠初盘", 92),
         ("c2cur", "皇冠即时", 92),
         ("bet", "下注层", 260),
-        ("note", "备注", 110),
     ]
 
     COMPANY_NAMES = {
@@ -67,7 +66,7 @@ class ScannerApp(tk.Tk):
             "东风‑61 洲际导弹  -作者：程序猿虾"
             "（本软件只提供数据参考，禁止非法赌博行为，如有违法行为后果自负！）"
         )
-        self.geometry("1560x920")
+        self.geometry("1250x920")
         self.running = False
         self.stop_ev = threading.Event()
         self.worker = None
@@ -77,6 +76,9 @@ class ScannerApp(tk.Tk):
         self.live_info = {}
         self._rechecked = set()
         self._score_verified = set()
+        self._prematch_notified = set()
+        self.ou_stats = []
+        self.ou_recorded = set()
         self.events = queue.Queue()
         self.alerted = set()
         self.skip = set()
@@ -107,6 +109,10 @@ class ScannerApp(tk.Tk):
         self._load_notes()
         self._build()
         self._load_history()
+        self.ou_stats = self._load_ou_stats()
+        self.ou_recorded = {str(x.get("sid")) for x in self.ou_stats}
+        for _r in self.all_rows:
+            self._record_ou_if_finished(_r)
         self.live_sids = {str(r.get("sid")) for r in self.all_rows}
         self.live_meta = {
             str(r.get("sid")): r.get("kickoff") for r in self.all_rows
@@ -168,10 +174,12 @@ class ScannerApp(tk.Tk):
         self.btn_start.pack(side="left", padx=6)
         self.btn_stop = ttk.Button(cfg, text="停止", command=self.stop, state="disabled")
         self.btn_stop.pack(side="left", padx=6)
-        ttk.Button(cfg, text="导出CSV", command=self.export_csv).pack(side="left", padx=6)
-        ttk.Label(cfg, text="提示音:").pack(side="left")
+        cfg2 = ttk.Frame(self, padding=(8, 0, 8, 4))
+        cfg2.pack(fill="x")
+        ttk.Button(cfg2, text="导出CSV", command=self.export_csv).pack(side="left", padx=6)
+        ttk.Label(cfg2, text="提示音:").pack(side="left")
         self.sound_cb = ttk.Combobox(
-            cfg,
+            cfg2,
             values=("无", "系统提示", "双声高音(默认)", "自定义WAV"),
             width=13,
             state="readonly",
@@ -179,31 +187,37 @@ class ScannerApp(tk.Tk):
         self.sound_cb.set(self.sound_mode)
         self.sound_cb.pack(side="left", padx=(2, 8))
         self.sound_cb.bind("<<ComboboxSelected>>", self._on_sound_select)
-        ttk.Button(cfg, text="清空已完赛", command=self._clear_finished).pack(
+        ttk.Button(cfg2, text="清空已完赛", command=self._clear_finished).pack(
             side="left", padx=4
         )
-        ttk.Button(cfg, text="删除选中", command=self._delete_selected).pack(
+        ttk.Button(cfg2, text="删除选中", command=self._delete_selected).pack(
+            side="left", padx=4
+        )
+        ttk.Button(cfg2, text="全选删除", command=self._delete_all).pack(
             side="left", padx=4
         )
         self.auto_clear_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(
             cfg, text="完场自动清空", variable=self.auto_clear_var
         ).pack(side="left", padx=4)
-        ttk.Button(cfg, text="汇总发送", command=self._send_digest_now).pack(
+        ttk.Button(cfg2, text="汇总发送", command=self._send_digest_now).pack(
             side="left", padx=4
         )
-        ttk.Button(cfg, text="邮箱通知", command=self._open_mail_settings).pack(
+        ttk.Button(cfg2, text="邮箱通知", command=self._open_mail_settings).pack(
             side="left", padx=4
         )
-        ttk.Button(cfg, text="胜率统计", command=self._show_winrate).pack(
+        ttk.Button(cfg2, text="胜率统计", command=self._show_winrate).pack(
             side="left", padx=4
         )
-        ttk.Button(cfg, text="联赛筛选", command=self._open_league_filter).pack(
+        ttk.Button(cfg2, text="对比统计", command=self._show_ou_stats).pack(
+            side="left", padx=4
+        )
+        ttk.Button(cfg2, text="联赛筛选", command=self._open_league_filter).pack(
             side="left", padx=4
         )
         self.all_leagues_var = tk.BooleanVar(value=self.all_leagues)
         ttk.Checkbutton(
-            cfg,
+            cfg2,
             text="全联赛(不过滤)",
             variable=self.all_leagues_var,
             command=self._toggle_all_leagues,
@@ -262,6 +276,7 @@ class ScannerApp(tk.Tk):
         )
         self._rechecked.clear()
         self._score_verified.clear()
+        self._prematch_notified.clear()
         for r in self.all_rows:
             sid = str(r.get("sid"))
             self.live_info[sid] = {
@@ -470,7 +485,144 @@ class ScannerApp(tk.Tk):
                     if self._last_live.get(sid) != (score, ""):
                         self._last_live[sid] = (score, "")
                         self.events.put(("live", sid, score, ""))
-            # 开赛前 10 分钟最后复查一次倾向
+            # 已锁定的场次: 开赛前15分钟发临场提醒(原始倾向+当前盘口)
+            for sid, info in list(self.live_info.items()):
+                snap = info.get("snapshot")
+                if not snap or sid in self._prematch_notified:
+                    continue
+                ko = info.get("kickoff")
+                if not ko:
+                    continue
+                try:
+                    ko_dt = datetime.strptime(ko, "%Y-%m-%d %H:%M")
+                except (TypeError, ValueError):
+                    continue
+                if not (ko_dt - timedelta(minutes=15) <= now2 < ko_dt):
+                    continue
+                self._prematch_notified.add(sid)
+                try:
+                    m = {
+                        "sid": sid,
+                        "league": info.get("league", ""),
+                        "home": info.get("home", ""),
+                        "away": info.get("away", ""),
+                        "time": info.get("time", ""),
+                        "kickoff": ko,
+                    }
+                    r = sc.fetch_one(m, cid=self.cid, cid2=3, timeout=12)
+                except Exception:
+                    r = None
+                if r and not r.get("error"):
+                    self.live_info.setdefault(sid, {})["t15_pin"] = r.get("cur_line")
+                    self.live_info.setdefault(sid, {})["t15_crown"] = r.get(
+                        "c2_cur_line"
+                    )
+                    self.live_info.setdefault(sid, {})["t15_sig"] = sc.ou_signal(r)
+                    cur_tend = sc.betting_reference(r)
+
+                    def _norm(x):
+                        return re.sub(r"[✔✘\s]|走盘", "", str(x))
+
+                    if _norm(cur_tend) == _norm(snap):
+                        check_txt = "与之前最终倾向一致"
+                        extra = ""
+                    else:
+                        check_txt = "已变化(注意)"
+                        _cl, _c2 = r.get("cur_line"), r.get("c2_cur_line")
+                        if _cl is not None and _c2 is not None:
+                            _d = round(_c2 - _cl, 3)
+                            if abs(_d) < 1e-9:
+                                _cmp = "与平博同盘"
+                            elif _d > 0:
+                                _cmp = f"皇冠高{sc.fmt_line(_d)}"
+                            else:
+                                _cmp = f"皇冠低{sc.fmt_line(abs(_d))}"
+                        else:
+                            _cmp = "皇冠无数据"
+                        _al, _a2 = r.get("ah_cur_line"), r.get("c2ah_cur_line")
+                        if _al is not None and _a2 is not None:
+                            _ad = round(_a2 - _al, 3)
+                            if abs(_ad) < 1e-9:
+                                _acmp = "与平博同盘"
+                            elif _ad > 0:
+                                _acmp = f"皇冠高{sc.fmt_line(_ad)}"
+                            else:
+                                _acmp = f"皇冠低{sc.fmt_line(abs(_ad))}"
+                        else:
+                            _acmp = "皇冠无数据"
+                        def _w(a, b):
+                            return f"{a}/{b}" if a is not None and b is not None else "-"
+
+                        _ah_txt = "无数据"
+                        if _al is not None:
+                            _ah_txt = (
+                                f"平博 {sc.fmt_ah_line(_al)} 水{_w(r.get('ah_cur_water_h'), r.get('ah_cur_water_a'))}"
+                            )
+                            if _a2 is not None:
+                                _ah_txt += (
+                                    f" | 皇冠 {sc.fmt_ah_line(_a2)} "
+                                    f"水{_w(r.get('c2ah_cur_water_h'), r.get('c2ah_cur_water_a'))}（{_acmp}）"
+                                )
+                        extra = (
+                            f"\n当前倾向: {cur_tend}\n"
+                            f"当前亚盘: {_ah_txt}\n"
+                            f"当前大小球(仅参考): 平博 {sc.fmt_odds(_cl, r.get('cur_big'), r.get('cur_small'))}"
+                            f" | 皇冠 {sc.fmt_odds(_c2, r.get('c2_cur_big'), r.get('c2_cur_small'))}"
+                            f"（{_cmp}）"
+                        )
+                        _reason = []
+                        if _al is None or _a2 is None:
+                            _reason.append("亚盘数据不全")
+                        elif _al * _a2 <= 0:
+                            _reason.append("两家亚盘方向不一致")
+                        else:
+                            _wh = r.get("ah_cur_water_h")
+                            _wa = r.get("ah_cur_water_a")
+                            if _wh and _wa:
+                                _ih, _ia = 1.0 / _wh, 1.0 / _wa
+                                _ph = _ih / (_ih + _ia)
+                                _prob = _ph if _al >= 0 else 1.0 - _ph
+                                if _prob < 0.55:
+                                    _reason.append(f"亚盘强度{_prob*100:.0f}%<55%")
+                                else:
+                                    _reason.append(f"亚盘强度{_prob*100:.0f}%")
+                            else:
+                                _reason.append("亚盘水位缺失")
+                        _osig = sc.ou_signal(r) or "无"
+                        _oscore = sc.size_score(r)["total"]
+                        _reason.append(f"大小球信号:{_osig}")
+                        _reason.append(f"大小球评分{_oscore}/35")
+                        _pf = r.get("platform") or {}
+                        if _pf:
+                            _reason.append(
+                                f"全平台主流{_pf.get('top')}({_pf.get('top_pct')}%)"
+                            )
+                        extra += "\n变化原因: " + " ｜ ".join(_reason)
+                    body = (
+                        f"开赛时间: {ko}\n"
+                        f"联赛: {info.get('league', '')}\n"
+                        f"主队: {info.get('home', '')}\n"
+                        f"客队: {info.get('away', '')}\n"
+                        f"原始倾向: {snap}\n"
+                        f"开赛前15分钟复查: {check_txt}{extra}\n"
+                    )
+                    subject = (
+                        f"临场提醒(15分钟): {info.get('league', '')} "
+                        f"{info.get('home', '')} vs {info.get('away', '')}"
+                    )
+                    cfg = self.mail_cfg
+                    if cfg.get("enabled") and all(
+                        cfg.get(k) for k in ("sender", "auth", "to")
+                    ):
+                        threading.Thread(
+                            target=self._mail_worker,
+                            args=(cfg, subject, body),
+                            daemon=True,
+                        ).start()
+                    self.events.put(("log", f"临场提醒已发送: {subject}"))
+                else:
+                    self.events.put(("log", f"临场提醒取数失败: {sid}"))
+            # 开赛前 15 分钟最后复查一次倾向
             now2 = datetime.now()
             for sid, info in list(self.live_info.items()):
                 if sid in self._rechecked:
@@ -482,7 +634,7 @@ class ScannerApp(tk.Tk):
                     ko_dt = datetime.strptime(ko, "%Y-%m-%d %H:%M")
                 except (TypeError, ValueError):
                     continue
-                if now2 < ko_dt - timedelta(minutes=10) or now2 >= ko_dt:
+                if now2 < ko_dt - timedelta(minutes=15) or now2 >= ko_dt:
                     continue
                 self._rechecked.add(sid)
                 try:
@@ -571,7 +723,50 @@ class ScannerApp(tk.Tk):
         )
         self._append_log(f"已删除场次: {name}")
 
+    def _backup_history(self):
+        src = self._history_path()
+        if not os.path.exists(src):
+            return None
+        import shutil as _shutil
+
+        bdir = os.path.join(app_dir(), "backups")
+        os.makedirs(bdir, exist_ok=True)
+        dst = os.path.join(
+            bdir, f"track_history_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        )
+        try:
+            _shutil.copy2(src, dst)
+            self._append_log(f"已备份历史: {dst}")
+            return dst
+        except Exception as e:
+            self._append_log(f"历史备份失败: {e}")
+            return None
+
+    def _delete_all(self):
+        if not self.all_rows:
+            self._append_log("当前没有可删除的记录")
+            return
+        if not messagebox.askyesno(
+            "全选删除",
+            f"确定要删除全部 {len(self.all_rows)} 条记录吗？"
+            "（删除前会自动备份历史文件）",
+        ):
+            return
+        self._backup_history()
+        self.all_rows = []
+        self.live_sids.clear()
+        self.live_meta.clear()
+        self.live_info.clear()
+        self.tend_sounded.clear()
+        self._rechecked.clear()
+        self._score_verified.clear()
+        self._prematch_notified.clear()
+        self._render([], set())
+        self._save_history()
+        self._append_log("已全选删除: 全部记录已清空")
+
     def _clear_finished(self):
+        self._backup_history()
         before = len(self.all_rows)
         self.all_rows = [
             r
@@ -596,6 +791,195 @@ class ScannerApp(tk.Tk):
             if len(self.all_rows) != before:
                 self._render(self.all_rows, set())
                 self._save_history()
+
+    def _ou_stats_path(self):
+        return os.path.join(app_dir(), "ou_compare_stats.json")
+
+    def _load_ou_stats(self):
+        p = self._ou_stats_path()
+        if os.path.exists(p):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, list):
+                    return [x for x in data if isinstance(x, dict)]
+            except Exception:
+                return []
+        return []
+
+    def _save_ou_stats(self):
+        try:
+            with open(self._ou_stats_path(), "w", encoding="utf-8") as f:
+                json.dump(self.ou_stats, f, ensure_ascii=False, indent=1)
+        except Exception as e:
+            self._append_log(f"对比统计保存失败: {e}")
+
+    def _record_ou_if_finished(self, row):
+        if not row:
+            return
+        if not sc.score_status(row).startswith("完场"):
+            return
+        score = (row.get("cur_score") or "").strip()
+        if "-" not in score:
+            return
+        sid = str(row.get("sid"))
+        if sid in self.ou_recorded:
+            return
+        try:
+            parts = score.split("-")
+            total = int(parts[0].strip()) + int(parts[1].strip())
+        except (ValueError, IndexError):
+            return
+        def _base(pin, crown):
+            if pin is None or crown is None:
+                return None
+            diff = round(crown - pin, 3)
+            if diff < -1e-9:
+                cat = "皇冠低盘"
+            elif diff > 1e-9:
+                cat = "皇冠高盘"
+            else:
+                cat = "两家同盘"
+            if total > pin + 1e-9:
+                res = "大"
+            elif total < pin - 1e-9:
+                res = "小"
+            else:
+                res = "走盘"
+            return {
+                "pin": pin,
+                "crown": crown,
+                "diff": diff,
+                "cat": cat,
+                "result": res,
+            }
+
+        info = self.live_info.get(sid, {})
+        b_t15 = _base(info.get("t15_pin"), info.get("t15_crown"))
+        b_lock = _base(
+            row.get("lock_pin_line") or row.get("lock2_pin_line"),
+            row.get("lock_crown_line") or row.get("lock2_crown_line"),
+        )
+        b_last = _base(row.get("cur_line"), row.get("c2_cur_line"))
+        if not (b_t15 or b_lock or b_last):
+            return
+        main = b_t15 or b_lock or b_last
+        self.ou_stats.append(
+            {
+                "sid": sid,
+                "date": row.get("kickoff", ""),
+                "league": row.get("league", ""),
+                "home": row.get("home", ""),
+                "away": row.get("away", ""),
+                "pin_line": main["pin"],
+                "crown_line": main["crown"],
+                "diff": main["diff"],
+                "cat": main["cat"],
+                "total": total,
+                "big25": "大" if total >= 3 else "小",
+                "result_vs_pin": main["result"],
+                "t15": b_t15,
+                "lock": b_lock,
+                "last": b_last,
+                "sig_t15": info.get("t15_sig"),
+                "sig_lock": row.get("lock_sig") or row.get("lock2_sig"),
+            }
+        )
+        self.ou_recorded.add(sid)
+        self._save_ou_stats()
+
+    def _show_ou_stats(self):
+        def summarize(getter):
+            groups = {}
+            for rec in self.ou_stats:
+                base = getter(rec)
+                if not base:
+                    continue
+                g = groups.setdefault(
+                    base.get("cat", "?"),
+                    {"n": 0, "大": 0, "小": 0, "走": 0, "big大": 0, "big小": 0},
+                )
+                g["n"] += 1
+                rp = base.get("result")
+                if rp == "大":
+                    g["大"] += 1
+                elif rp == "小":
+                    g["小"] += 1
+                else:
+                    g["走"] += 1
+                if rec.get("big25") == "大":
+                    g["big大"] += 1
+                else:
+                    g["big小"] += 1
+            return groups
+
+        lines = [f"累计样本: {len(self.ou_stats)} 场", ""]
+        for title, getter in (
+            ("【开赛前15分钟盘口】", lambda rec: rec.get("t15")),
+            ("【第一次红标盘口】", lambda rec: rec.get("lock")),
+        ):
+            groups = summarize(getter)
+            lines.append(title)
+            any_row = False
+            for cat in ("皇冠低盘", "两家同盘", "皇冠高盘"):
+                g = groups.get(cat)
+                if not g:
+                    continue
+                any_row = True
+                pct = 100.0 * g["big大"] / g["n"] if g["n"] else 0
+                lines.append(
+                    f"  {cat}: {g['n']} 场 | 总进球≥3 {g['big大']} / ≤2 {g['big小']} | "
+                    f"大球占比 {pct:.0f}% | 对主盘 大{g['大']}/小{g['小']}/走{g['走']}"
+                )
+            if not any_row:
+                lines.append("  暂无样本")
+            lines.append("")
+        for label_txt, kw in (
+            ("升盘+大升水(升盘阻大)", "升盘阻大"),
+            ("降盘+大降水(可能诱大)", "诱大"),
+        ):
+            n = big = small = w = l = p = 0
+            for rec in self.ou_stats:
+                sig = (rec.get("sig_t15") or rec.get("sig_lock") or "")
+                if kw not in sig:
+                    continue
+                n += 1
+                if rec.get("big25") == "大":
+                    big += 1
+                else:
+                    small += 1
+                rp = (rec.get("t15") or rec.get("lock") or {}).get("result")
+                if rp == "大":
+                    w += 1
+                elif rp == "小":
+                    l += 1
+                else:
+                    p += 1
+            pct = (100.0 * big / n) if n else 0
+            lines.append(
+                f"【专项】{label_txt}: {n} 场 | 总进球≥3 {big} / ≤2 {small} | "
+                f"大球占比 {pct:.0f}% | 对主盘 大{w}/小{l}/走{p}"
+            )
+        lines.append("")
+        lines.append("最近 20 场明细:")
+        for rec in self.ou_stats[-20:]:
+            base = rec.get("t15") or rec.get("lock") or rec.get("last") or {}
+            lines.append(
+                f"{rec.get('date', '')[:16]} {rec.get('league', '')} "
+                f"{rec.get('home', '')} vs {rec.get('away', '')} | "
+                f"平博 {base.get('pin')} 皇冠 {base.get('crown')} ({base.get('cat')}) | "
+                f"总进球 {rec.get('total')} → {rec.get('big25')}"
+            )
+        text = "\n".join(lines)
+        win = tk.Toplevel(self)
+        win.title("盘口对比统计")
+        win.transient(self)
+        tk.Label(
+            win, text=text, justify="left", font=("Microsoft YaHei", 10), padx=16, pady=12
+        ).pack()
+        ttk.Button(win, text="关闭", command=win.destroy).pack(pady=(0, 10))
+        win.geometry(f"+{self.winfo_rootx() + 100}+{self.winfo_rooty() + 120}")
+        self._append_log(f"对比统计: 样本 {len(self.ou_stats)} 场")
 
     def _mail_cfg_path(self):
         return os.path.join(app_dir(), "email_config.json")
@@ -761,6 +1145,12 @@ class ScannerApp(tk.Tk):
 
     def _send_daily_digest(self, day, tag="21:00"):
         rows = [r for r in self.all_rows if "倾向" in sc.bet_cell(r)]
+        rows.sort(
+            key=lambda r: (
+                r.get("kickoff") or "9999-99-99 99:99",
+                r.get("time") or "",
+            )
+        )
         if not rows:
             self._append_log(f"{day} {tag} 无建议下注，未发送邮件")
             return
@@ -1015,9 +1405,9 @@ class ScannerApp(tk.Tk):
                     self._append_log(ev[1])
                 elif kind == "row":
                     r, is_new = ev[1], ev[2]
-                    old_snap = next(
+                    old_row = next(
                         (
-                            x.get("bet_snapshot")
+                            x
                             for x in self.all_rows
                             if x.get("sid") == r["sid"]
                         ),
@@ -1026,8 +1416,23 @@ class ScannerApp(tk.Tk):
                     self.all_rows = [
                         x for x in self.all_rows if x.get("sid") != r["sid"]
                     ]
-                    if old_snap:
-                        r["bet_snapshot"] = old_snap
+                    if old_row:
+                        for _k in (
+                            "bet_snapshot",
+                            "bet_snapshot2",
+                            "lock_pin_line",
+                            "lock_crown_line",
+                            "lock2_pin_line",
+                            "lock2_crown_line",
+                            "lock_sig",
+                            "lock2_sig",
+                        ):
+                            if old_row.get(_k) is not None:
+                                r[_k] = old_row[_k]
+                    if r.get("bet_snapshot"):
+                        self.live_info.setdefault(r["sid"], {})[
+                            "snapshot"
+                        ] = r["bet_snapshot"]
                     self.all_rows.append(r)
                     self._render(self.all_rows, {r["sid"]} if is_new else set())
                     self._save_history()
@@ -1040,10 +1445,32 @@ class ScannerApp(tk.Tk):
                             f"→ {sc.fmt_odds(r.get('cur_line'), r.get('cur_big'), r.get('cur_small'))} "
                             f"盘差 {r['diff']}"
                         )
-                    has_tend = "倾向" in sc.betting_reference(r)
+                    cur_txt = sc.betting_reference(r)
+                    has_tend = "倾向" in cur_txt
                     if has_tend and "bet_snapshot" not in r:
-                        r["bet_snapshot"] = sc.betting_reference(r)
+                        r["bet_snapshot"] = cur_txt
+                        r["lock_pin_line"] = r.get("cur_line")
+                        r["lock_crown_line"] = r.get("c2_cur_line")
+                        r["lock_sig"] = sc.ou_signal(r)
                         self._save_history()
+                    elif has_tend and not r.get("bet_snapshot2"):
+                        def _mkt(x):
+                            if "[亚盘]" in x:
+                                return "亚盘"
+                            if "[大小]" in x:
+                                return "大小"
+                            return "?"
+
+                        if _mkt(cur_txt) != _mkt(r.get("bet_snapshot") or ""):
+                            r["bet_snapshot2"] = cur_txt
+                            r["lock2_pin_line"] = r.get("cur_line")
+                            r["lock2_crown_line"] = r.get("c2_cur_line")
+                            r["lock2_sig"] = sc.ou_signal(r)
+                            self._save_history()
+                            self._append_log(
+                                f"已追加参考倾向: {r.get('league', '')} "
+                                f"{r.get('home', '')} vs {r.get('away', '')} → {cur_txt}"
+                            )
                     if has_tend and r["sid"] not in self.tend_sounded:
                         self.tend_sounded.add(r["sid"])
                         self._append_log(
@@ -1059,6 +1486,10 @@ class ScannerApp(tk.Tk):
                         if x.get("sid") == sid:
                             x["cur_score"] = score
                             x["cur_minute"] = minute
+                            break
+                    for _x in self.all_rows:
+                        if _x.get("sid") == sid:
+                            self._record_ou_if_finished(_x)
                             break
                     self._render(self.all_rows, set())
                     self._save_history()
@@ -1101,8 +1532,6 @@ class ScannerApp(tk.Tk):
                 tag = "diff2"
             else:
                 tag = ""
-            manual = self.notes.get(str(r["sid"]), "")
-            note_txt = manual if manual else mark
             bet_txt = sc.betting_reference(r)
             bet_cell = sc.bet_cell(r)
             row_tags = []
@@ -1134,7 +1563,6 @@ class ScannerApp(tk.Tk):
                         r.get("c2_cur_line"), r.get("c2_cur_big"), r.get("c2_cur_small")
                     ),
                     bet_cell,
-                    note_txt,
                 ),
                 tags=tuple(row_tags),
             )

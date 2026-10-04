@@ -345,9 +345,9 @@ def betting_reference(r):
             prob = p_home if ah_cur >= 0 else 1.0 - p_home
             if prob >= 0.55:
                 if ah_cur >= 0:
-                    buys.append(f"倾向[亚盘] 主队 {_ah_cn(ah_cur).lstrip('让')}")
+                    buys.append(f"倾向[亚盘] 主队 让{_ah_cn(ah_cur).lstrip('让')}")
                 else:
-                    buys.append(f"倾向[亚盘] 客队 受{_ah_cn(ah_cur).lstrip('受')}")
+                    buys.append(f"倾向[亚盘] 客队 让{_ah_cn(ah_cur).lstrip('受')}")
     if not buys:
         return "不建议下注"
     return " ｜ ".join(buys)
@@ -377,11 +377,8 @@ def _leg_result_gt(value, leg):
     return 0
 
 
-def result_verdict(r):
-    """After full time: settle each 倾向 in the betting cell against final score.
-    Returns ('✔', ...) hit / ('✘', ...) miss / ('走盘', ...) or None if not settled.
-    """
-    if not score_status(r).startswith("完场"):
+def _settle_text(text, r):
+    if not text or "倾向" not in text:
         return None
     score = (r.get("cur_score") or "").strip()
     if "-" not in score:
@@ -393,9 +390,6 @@ def result_verdict(r):
         return None
     total = home_g + away_g
     margin = home_g - away_g
-    text = r.get("bet_snapshot") or betting_reference(r)
-    if not text or "倾向" not in text:
-        return None
     wins = []
     for seg in text.split("｜"):
         seg = seg.strip()
@@ -423,9 +417,11 @@ def result_verdict(r):
             line = t.parse_ah_line(term)
             if line is None:
                 continue
-            for leg in _split_line(abs(line)) if line >= 0 else _split_line(-abs(line)):
-                # buy side wins when actual margin beats the signed handicap leg
-                wins.append(_leg_result_gt(margin, leg))
+            for leg in _split_line(abs(line)):
+                if side == "主队":
+                    wins.append(_leg_result_gt(margin, leg))
+                else:
+                    wins.append(_leg_result_gt(-margin, leg))
     if not wins:
         return None
     if any(w < 0 for w in wins):
@@ -435,6 +431,20 @@ def result_verdict(r):
     return "走盘"
 
 
+def result_verdict(r):
+    """主倾向的结算结果(锁定快照为准)。"""
+    if not score_status(r).startswith("完场"):
+        return None
+    return _settle_text(r.get("bet_snapshot") or betting_reference(r), r)
+
+
+def result_verdict2(r):
+    """参考倾向(另一种市场)的结算结果。"""
+    if not score_status(r).startswith("完场"):
+        return None
+    return _settle_text(r.get("bet_snapshot2"), r)
+
+
 def bet_cell(r):
     text = betting_reference(r)
     snap = r.get("bet_snapshot")
@@ -442,7 +452,11 @@ def bet_cell(r):
         text = snap
     mark = result_verdict(r)
     if mark:
-        return f"{text} {mark}"
+        text = f"{text} {mark}"
+    snap2 = r.get("bet_snapshot2")
+    if snap2 and "倾向" in snap2:
+        mark2 = result_verdict2(r)
+        text = f"{text} ｜ 参考:{snap2}" + (f" {mark2}" if mark2 else "")
     return text
 
 
