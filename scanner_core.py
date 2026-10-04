@@ -480,6 +480,9 @@ def score_status(r):
     minute = (r.get("cur_minute") or "").strip()
     ko = r.get("kickoff")
     now = datetime.now()
+    # 官方即时比分已判定完场(比盘口页及时)
+    if (r.get("live_state") or "").strip() == "-1" and score:
+        return f"完场 {score}"
     if score:
         if ko:
             try:

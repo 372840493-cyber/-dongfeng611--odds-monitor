@@ -36,7 +36,21 @@ AH_CHANGE_URL = (
     "https://vip.titan007.com/changeDetail/handicap.aspx"
     "?id={sid}&companyID={cid}&l=0"
 )
+LIVE_DATA_URL = "https://bf.titan007.com/vbsxml/bfdata.js?r=007"
 HOME_URL = "https://www.titan007.com/"
+
+# 官方即时比分状态码: -1 完场 / 0 未开赛 / 1 上半场 / 2 中场 / 3 下半场
+LIVE_STATE_TEXT = {
+    "-1": "完场",
+    "0": "未开赛",
+    "1": "上半场",
+    "2": "中场",
+    "3": "下半场",
+    "4": "加时",
+    "5": "点球",
+}
+
+_LIVE_CACHE = {"t": 0.0, "map": None}
 
 AH_MAP = {
     "平手": 0.0, "平手/半球": 0.25, "半球": 0.5, "半球/一球": 0.75,
@@ -578,6 +592,56 @@ def fetch_company_ah_detail(sid, cid=47, timeout=20):
     return parse_company_ah_detail(
         fetch_text(AH_CHANGE_URL.format(sid=sid, cid=cid), timeout=timeout)
     )
+
+
+def parse_live_states(text):
+    """Parse titan007 live feed (bfdata.js) into {sid: {...}}."""
+    out = {}
+    if not text:
+        return out
+    for m in re.finditer(r'A\[\d+\]="(.*?)"\.split', text, re.S):
+        f = m.group(1).split("^")
+        if len(f) < 18 or not f[0].isdigit():
+            continue
+        state = f[13].strip()
+        hs, aws = f[14].strip(), f[15].strip()
+        score = ""
+        if hs.isdigit() and aws.isdigit() and state != "0":
+            score = f"{hs}-{aws}"
+        htd, atd = f[16].strip(), f[17].strip()
+        half = ""
+        if htd.isdigit() and atd.isdigit() and state != "0":
+            half = f"{htd}-{atd}"
+        out[f[0]] = {
+            "state": state,
+            "state_text": LIVE_STATE_TEXT.get(state, ""),
+            "finished": state == "-1",
+            "ko_time": f[11].strip(),
+            "updated": f[12].strip(),
+            "score": score,
+            "half": half,
+            "home_cn": f[5].strip(),
+            "away_cn": f[8].strip(),
+            "home_en": f[7].strip(),
+            "away_en": f[10].strip(),
+        }
+    return out
+
+
+def fetch_live_states(timeout=20, cache_secs=25):
+    """All matches' live status/score from titan007 feed (cached briefly)."""
+    now = time.time()
+    if _LIVE_CACHE["map"] is not None and now - _LIVE_CACHE["t"] < cache_secs:
+        return _LIVE_CACHE["map"]
+    try:
+        text = fetch_text(LIVE_DATA_URL, timeout=timeout)
+    except Exception:
+        return _LIVE_CACHE["map"] or {}
+    states = parse_live_states(text)
+    if states:
+        _LIVE_CACHE["map"] = states
+        _LIVE_CACHE["t"] = now
+    return states or (_LIVE_CACHE["map"] or {})
 
 
 def _f(txt):
