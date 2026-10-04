@@ -1359,9 +1359,12 @@ class ScannerApp(tk.Tk):
                 pass  # 其它(含 ✘)保持原样不动
             lines.append(line)
         return (
-            "<html><body style=\"font-family:'Microsoft YaHei',Arial,sans-serif;"
-            'font-size:14px;color:#222222;">'
-            '<div style="white-space:pre-wrap;font-size:14px;line-height:1.6;">'
+            "<html><head>"
+            '<meta name="viewport" content="width=device-width,initial-scale=1">'
+            "</head>"
+            '<body style="font-family:\'Microsoft YaHei\',Arial,sans-serif;'
+            'font-size:17px;color:#222222;-webkit-text-size-adjust:100%;">'
+            '<div style="white-space:pre-wrap;font-size:17px;line-height:1.9;">'
             + esc(head)
             + "\n\n"
             + "\n".join(lines)
