@@ -1332,21 +1332,15 @@ class ScannerApp(tk.Tk):
         self._append_log(f"{day} {tag} 已发送建议下注汇总: {len(rows)} 场")
 
     def _digest_html(self, rows, head):
-        """汇总邮件彩色版: 完赛正确 -> 队伍红色✔, 错误 -> 黑色✘。"""
+        """汇总邮件彩色版: 保持原来一行一场的样子(不用表格)。
+
+        完赛正确 -> 队伍红色✔, 完赛错误 -> 黑色✘。
+        """
 
         def esc(x):
             return _html.escape(str(x if x is not None else ""))
 
-        parts = [
-            "<html><body style=\"font-family:'Microsoft YaHei',Arial,sans-serif;"
-            'font-size:14px;color:#222222;">',
-            f"<p>{esc(head)}</p>",
-            '<table border="1" cellspacing="0" cellpadding="6" '
-            'style="border-collapse:collapse;font-size:14px;">',
-            '<tr style="background:#f2f2f2;">'
-            "<th>联赛</th><th>开赛</th><th>比分/状态</th>"
-            "<th>主队</th><th>客队</th><th>下注层</th></tr>",
-        ]
+        lines = []
         for r in rows:
             cell = sc.bet_cell(r)
             if "✔" in cell:
@@ -1355,21 +1349,32 @@ class ScannerApp(tk.Tk):
                 color, mark = "#000000", " ✘"
             else:
                 color, mark = "#333333", ""
-            style = f"color:{color};"
-            if mark:
-                style += "font-weight:bold;"
-            parts.append(
-                "<tr>"
-                f"<td>{esc(r.get('league'))}</td>"
-                f"<td>{esc(r.get('time'))}</td>"
-                f"<td>{esc(sc.score_status(r))}</td>"
-                f'<td style="{style}">{esc(r.get("home"))}</td>'
-                f'<td style="{style}">{esc(r.get("away"))}{mark}</td>'
-                f"<td>{esc(cell)}</td>"
-                "</tr>"
+            style = f"color:{color};" + ("font-weight:bold;" if mark else "")
+            lines.append(
+                ",".join(
+                    [
+                        esc(r.get("league")),
+                        esc(r.get("time")),
+                        esc(sc.score_status(r)),
+                        f'<span style="{style}">{esc(r.get("home"))}</span>',
+                        (
+                            f'<span style="{style}">'
+                            f'{esc(r.get("away"))}{mark}</span>'
+                        ),
+                        esc(cell),
+                    ]
+                )
             )
-        parts.append("</table></body></html>")
-        return "".join(parts)
+        header = "联赛,开赛,比分/状态,主队,客队,下注层"
+        return (
+            "<html><body style=\"font-family:'Microsoft YaHei',Arial,sans-serif;"
+            'font-size:14px;color:#222222;">'
+            f"<p style=\"margin:0 0 8px 0;\">{esc(head)}</p>"
+            '<div style="white-space:pre-wrap;font-size:14px;line-height:1.6;">'
+            + esc(header)
+            + "\n"
+            + "\n".join(lines)
+        ) + "</div></body></html>"
 
     def _proxy_cfg_path(self):
         return os.path.join(app_dir(), "proxy_config.json")
