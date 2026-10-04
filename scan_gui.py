@@ -75,6 +75,10 @@ class ScannerApp(tk.Tk):
         self._feed_seen = {}
         self._feed_live = set()
         self._live_done = set()
+        self._digest_timer = None
+        self._last_digest_ts = 0.0
+        self._digest_min_gap = 60.0
+        self._digest_reason = ""
         self.live_meta = {}
         self.live_info = {}
         self._rechecked = set()
@@ -1179,26 +1183,32 @@ class ScannerApp(tk.Tk):
         win.geometry(f"+{self.winfo_rootx() + 100}+{self.winfo_rooty() + 150}")
         self.wait_window(win)
 
-    def _send_tend_mail(self, r):
+    def _queue_digest_mail(self, reason="出现新倾向"):
+        """一出现倾向就排队发汇总邮件(同一批合并, 并有最小间隔)。"""
         cfg = self.mail_cfg
         if not cfg.get("enabled") or not all(
             cfg.get(k) for k in ("sender", "auth", "to")
         ):
             return
-        cell = r.get("bet_snapshot") or sc.betting_reference(r)
-        body = (
-            f"联赛: {r.get('league', '')}\n"
-            f"开赛: {r.get('kickoff') or r.get('time', '')}\n"
-            f"主队: {r.get('home', '')}\n"
-            f"客队: {r.get('away', '')}\n"
-            f"下注层: {cell}\n"
+        if self._digest_timer is not None:
+            try:
+                self.after_cancel(self._digest_timer)
+            except Exception:
+                pass
+        now = time.time()
+        wait = max(8.0, self._digest_min_gap - (now - self._last_digest_ts))
+        self._digest_reason = reason
+        self._digest_timer = self.after(
+            int(wait * 1000), self._flush_auto_digest
         )
-        subject = f"东风-61洲际导弹 倾向提醒: {r.get('league', '')} {r.get('home', '')} vs {r.get('away', '')}"
-        threading.Thread(
-            target=self._mail_worker,
-            args=(cfg, subject, body),
-            daemon=True,
-        ).start()
+
+    def _flush_auto_digest(self):
+        self._digest_timer = None
+        self._last_digest_ts = time.time()
+        day = datetime.now().strftime("%Y-%m-%d")
+        self._send_daily_digest(
+            day, tag="自动", reason=getattr(self, "_digest_reason", "")
+        )
 
     def _mail_worker(self, cfg, subject, body, attachment=None):
         try:
@@ -1259,7 +1269,7 @@ class ScannerApp(tk.Tk):
         day = datetime.now().strftime("%Y-%m-%d")
         self._send_daily_digest(day, tag="手动")
 
-    def _send_daily_digest(self, day, tag="21:00"):
+    def _send_daily_digest(self, day, tag="21:00", reason=""):
         rows = [r for r in self.all_rows if "倾向" in sc.bet_cell(r)]
         rows.sort(
             key=lambda r: (
@@ -1294,8 +1304,16 @@ class ScannerApp(tk.Tk):
                 ]
             )
         text = buf.getvalue()
-        subject = f"东风-61洲际导弹 每日建议下注 {day} ({len(rows)}场)"
-        body = f"今日 21:00 建议下注汇总，共 {len(rows)} 场。\n\n" + text
+        if tag == "自动":
+            stamp = datetime.now().strftime("%m-%d %H:%M")
+            subject = (
+                f"东风-61洲际导弹 新倾向汇总 {stamp} ({len(rows)}场)"
+            )
+            head = f"{reason or '出现新倾向'}，当前建议下注汇总，共 {len(rows)} 场。"
+        else:
+            subject = f"东风-61洲际导弹 每日建议下注 {day} ({len(rows)}场)"
+            head = f"今日 21:00 建议下注汇总，共 {len(rows)} 场。"
+        body = head + "\n\n" + text
         fname = f"建议下注_{day}.csv"
         data = ("\ufeff" + text).encode("utf-8")
         threading.Thread(
@@ -1647,7 +1665,10 @@ class ScannerApp(tk.Tk):
                             f"{sc.betting_reference(r)}"
                         )
                         self._play_tend_sound()
-                        self._send_tend_mail(r)
+                        self._queue_digest_mail(
+                            f"新倾向: {r.get('league', '')} "
+                            f"{r.get('home', '')} vs {r.get('away', '')}"
+                        )
                 elif kind == "live":
                     sid, score, minute = ev[1], ev[2], ev[3]
                     for x in self.all_rows:
