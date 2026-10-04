@@ -512,6 +512,10 @@ class ScannerApp(tk.Tk):
                 except Exception:
                     r = None
                 if r and not r.get("error"):
+                    self.live_info.setdefault(sid, {})["t15_pin"] = r.get("cur_line")
+                    self.live_info.setdefault(sid, {})["t15_crown"] = r.get(
+                        "c2_cur_line"
+                    )
                     cur_tend = sc.bet_cell(r)
 
                     def _norm(x):
@@ -824,23 +828,37 @@ class ScannerApp(tk.Tk):
             total = int(parts[0].strip()) + int(parts[1].strip())
         except (ValueError, IndexError):
             return
-        pin = row.get("cur_line")
-        crown = row.get("c2_cur_line")
-        if pin is None or crown is None:
+        def _base(pin, crown):
+            if pin is None or crown is None:
+                return None
+            diff = round(crown - pin, 3)
+            if diff < -1e-9:
+                cat = "皇冠低盘"
+            elif diff > 1e-9:
+                cat = "皇冠高盘"
+            else:
+                cat = "两家同盘"
+            if total > pin + 1e-9:
+                res = "大"
+            elif total < pin - 1e-9:
+                res = "小"
+            else:
+                res = "走盘"
+            return {
+                "pin": pin,
+                "crown": crown,
+                "diff": diff,
+                "cat": cat,
+                "result": res,
+            }
+
+        info = self.live_info.get(sid, {})
+        b_t15 = _base(info.get("t15_pin"), info.get("t15_crown"))
+        b_lock = _base(row.get("lock_pin_line"), row.get("lock_crown_line"))
+        b_last = _base(row.get("cur_line"), row.get("c2_cur_line"))
+        if not (b_t15 or b_lock or b_last):
             return
-        diff = round(crown - pin, 3)
-        if diff < -1e-9:
-            cat = "皇冠低盘"
-        elif diff > 1e-9:
-            cat = "皇冠高盘"
-        else:
-            cat = "两家同盘"
-        if total > pin + 1e-9:
-            res_pin = "大"
-        elif total < pin - 1e-9:
-            res_pin = "小"
-        else:
-            res_pin = "走盘"
+        main = b_t15 or b_lock or b_last
         self.ou_stats.append(
             {
                 "sid": sid,
@@ -848,60 +866,75 @@ class ScannerApp(tk.Tk):
                 "league": row.get("league", ""),
                 "home": row.get("home", ""),
                 "away": row.get("away", ""),
-                "pin_line": pin,
-                "crown_line": crown,
-                "diff": diff,
-                "cat": cat,
+                "pin_line": main["pin"],
+                "crown_line": main["crown"],
+                "diff": main["diff"],
+                "cat": main["cat"],
                 "total": total,
                 "big25": "大" if total >= 3 else "小",
-                "result_vs_pin": res_pin,
+                "result_vs_pin": main["result"],
+                "t15": b_t15,
+                "lock": b_lock,
+                "last": b_last,
             }
         )
         self.ou_recorded.add(sid)
         self._save_ou_stats()
 
     def _show_ou_stats(self):
-        groups = {}
-        for rec in self.ou_stats:
-            g = groups.setdefault(
-                rec.get("cat", "?"),
-                {"n": 0, "大": 0, "小": 0, "走": 0, "big25大": 0, "big25小": 0},
-            )
-            g["n"] += 1
-            rp = rec.get("result_vs_pin")
-            if rp == "大":
-                g["大"] += 1
-            elif rp == "小":
-                g["小"] += 1
-            else:
-                g["走"] += 1
-            if rec.get("big25") == "大":
-                g["big25大"] += 1
-            else:
-                g["big25小"] += 1
+        def summarize(getter):
+            groups = {}
+            for rec in self.ou_stats:
+                base = getter(rec)
+                if not base:
+                    continue
+                g = groups.setdefault(
+                    base.get("cat", "?"),
+                    {"n": 0, "大": 0, "小": 0, "走": 0, "big大": 0, "big小": 0},
+                )
+                g["n"] += 1
+                rp = base.get("result")
+                if rp == "大":
+                    g["大"] += 1
+                elif rp == "小":
+                    g["小"] += 1
+                else:
+                    g["走"] += 1
+                if rec.get("big25") == "大":
+                    g["big大"] += 1
+                else:
+                    g["big小"] += 1
+            return groups
+
         lines = [f"累计样本: {len(self.ou_stats)} 场", ""]
-        for cat in ("皇冠低盘", "两家同盘", "皇冠高盘"):
-            if cat not in groups:
-                continue
-            g = groups[cat]
-            pct = (100.0 * g["big25大"] / g["n"]) if g["n"] else 0
-            lines.append(
-                f"{cat}: {g['n']} 场 | 总进球≥3: {g['big25大']} 场 | ≤2: {g['big25小']} 场 | "
-                f"大球占比 {pct:.0f}%"
-            )
-            lines.append(
-                f"    对平博盘结果: 大 {g['大']} / 小 {g['小']} / 走盘 {g['走']}"
-            )
-        if len(lines) <= 2:
-            lines.append("暂无已完场且数据齐全的样本")
-        lines.append("")
+        for title, getter in (
+            ("【开赛前15分钟盘口】", lambda rec: rec.get("t15")),
+            ("【第一次红标盘口】", lambda rec: rec.get("lock")),
+        ):
+            groups = summarize(getter)
+            lines.append(title)
+            any_row = False
+            for cat in ("皇冠低盘", "两家同盘", "皇冠高盘"):
+                g = groups.get(cat)
+                if not g:
+                    continue
+                any_row = True
+                pct = 100.0 * g["big大"] / g["n"] if g["n"] else 0
+                lines.append(
+                    f"  {cat}: {g['n']} 场 | 总进球≥3 {g['big大']} / ≤2 {g['big小']} | "
+                    f"大球占比 {pct:.0f}% | 对主盘 大{g['大']}/小{g['小']}/走{g['走']}"
+                )
+            if not any_row:
+                lines.append("  暂无样本")
+            lines.append("")
         lines.append("最近 20 场明细:")
         for rec in self.ou_stats[-20:]:
+            base = rec.get("t15") or rec.get("lock") or rec.get("last") or {}
             lines.append(
                 f"{rec.get('date', '')[:16]} {rec.get('league', '')} "
                 f"{rec.get('home', '')} vs {rec.get('away', '')} | "
-                f"平博 {rec.get('pin_line')} 皇冠 {rec.get('crown_line')} "
-                f"({rec.get('cat')}) | 总进球 {rec.get('total')} → {rec.get('big25')}"
+                f"平博 {base.get('pin')} 皇冠 {base.get('crown')} ({base.get('cat')}) | "
+                f"总进球 {rec.get('total')} → {rec.get('big25')}"
             )
         text = "\n".join(lines)
         win = tk.Toplevel(self)
@@ -1370,6 +1403,8 @@ class ScannerApp(tk.Tk):
                     has_tend = "倾向" in sc.betting_reference(r)
                     if has_tend and "bet_snapshot" not in r:
                         r["bet_snapshot"] = sc.betting_reference(r)
+                        r["lock_pin_line"] = r.get("cur_line")
+                        r["lock_crown_line"] = r.get("c2_cur_line")
                         self._save_history()
                     if has_tend and r["sid"] not in self.tend_sounded:
                         self.tend_sounded.add(r["sid"])
