@@ -78,6 +78,8 @@ class ScannerApp(tk.Tk):
         self._rechecked = set()
         self._score_verified = set()
         self._prematch_notified = set()
+        self.ou_stats = []
+        self.ou_recorded = set()
         self.events = queue.Queue()
         self.alerted = set()
         self.skip = set()
@@ -108,6 +110,10 @@ class ScannerApp(tk.Tk):
         self._load_notes()
         self._build()
         self._load_history()
+        self.ou_stats = self._load_ou_stats()
+        self.ou_recorded = {str(x.get("sid")) for x in self.ou_stats}
+        for _r in self.all_rows:
+            self._record_ou_if_finished(_r)
         self.live_sids = {str(r.get("sid")) for r in self.all_rows}
         self.live_meta = {
             str(r.get("sid")): r.get("kickoff") for r in self.all_rows
@@ -200,6 +206,9 @@ class ScannerApp(tk.Tk):
             side="left", padx=4
         )
         ttk.Button(cfg, text="胜率统计", command=self._show_winrate).pack(
+            side="left", padx=4
+        )
+        ttk.Button(cfg, text="对比统计", command=self._show_ou_stats).pack(
             side="left", padx=4
         )
         ttk.Button(cfg, text="联赛筛选", command=self._open_league_filter).pack(
@@ -777,6 +786,134 @@ class ScannerApp(tk.Tk):
                 self._render(self.all_rows, set())
                 self._save_history()
 
+    def _ou_stats_path(self):
+        return os.path.join(app_dir(), "ou_compare_stats.json")
+
+    def _load_ou_stats(self):
+        p = self._ou_stats_path()
+        if os.path.exists(p):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, list):
+                    return [x for x in data if isinstance(x, dict)]
+            except Exception:
+                return []
+        return []
+
+    def _save_ou_stats(self):
+        try:
+            with open(self._ou_stats_path(), "w", encoding="utf-8") as f:
+                json.dump(self.ou_stats, f, ensure_ascii=False, indent=1)
+        except Exception as e:
+            self._append_log(f"对比统计保存失败: {e}")
+
+    def _record_ou_if_finished(self, row):
+        if not row:
+            return
+        if not sc.score_status(row).startswith("完场"):
+            return
+        score = (row.get("cur_score") or "").strip()
+        if "-" not in score:
+            return
+        sid = str(row.get("sid"))
+        if sid in self.ou_recorded:
+            return
+        try:
+            parts = score.split("-")
+            total = int(parts[0].strip()) + int(parts[1].strip())
+        except (ValueError, IndexError):
+            return
+        pin = row.get("cur_line")
+        crown = row.get("c2_cur_line")
+        if pin is None or crown is None:
+            return
+        diff = round(crown - pin, 3)
+        if diff < -1e-9:
+            cat = "皇冠低盘"
+        elif diff > 1e-9:
+            cat = "皇冠高盘"
+        else:
+            cat = "两家同盘"
+        if total > pin + 1e-9:
+            res_pin = "大"
+        elif total < pin - 1e-9:
+            res_pin = "小"
+        else:
+            res_pin = "走盘"
+        self.ou_stats.append(
+            {
+                "sid": sid,
+                "date": row.get("kickoff", ""),
+                "league": row.get("league", ""),
+                "home": row.get("home", ""),
+                "away": row.get("away", ""),
+                "pin_line": pin,
+                "crown_line": crown,
+                "diff": diff,
+                "cat": cat,
+                "total": total,
+                "big25": "大" if total >= 3 else "小",
+                "result_vs_pin": res_pin,
+            }
+        )
+        self.ou_recorded.add(sid)
+        self._save_ou_stats()
+
+    def _show_ou_stats(self):
+        groups = {}
+        for rec in self.ou_stats:
+            g = groups.setdefault(
+                rec.get("cat", "?"),
+                {"n": 0, "大": 0, "小": 0, "走": 0, "big25大": 0, "big25小": 0},
+            )
+            g["n"] += 1
+            rp = rec.get("result_vs_pin")
+            if rp == "大":
+                g["大"] += 1
+            elif rp == "小":
+                g["小"] += 1
+            else:
+                g["走"] += 1
+            if rec.get("big25") == "大":
+                g["big25大"] += 1
+            else:
+                g["big25小"] += 1
+        lines = [f"累计样本: {len(self.ou_stats)} 场", ""]
+        for cat in ("皇冠低盘", "两家同盘", "皇冠高盘"):
+            if cat not in groups:
+                continue
+            g = groups[cat]
+            pct = (100.0 * g["big25大"] / g["n"]) if g["n"] else 0
+            lines.append(
+                f"{cat}: {g['n']} 场 | 总进球≥3: {g['big25大']} 场 | ≤2: {g['big25小']} 场 | "
+                f"大球占比 {pct:.0f}%"
+            )
+            lines.append(
+                f"    对平博盘结果: 大 {g['大']} / 小 {g['小']} / 走盘 {g['走']}"
+            )
+        if len(lines) <= 2:
+            lines.append("暂无已完场且数据齐全的样本")
+        lines.append("")
+        lines.append("最近 20 场明细:")
+        for rec in self.ou_stats[-20:]:
+            lines.append(
+                f"{rec.get('date', '')[:16]} {rec.get('league', '')} "
+                f"{rec.get('home', '')} vs {rec.get('away', '')} | "
+                f"平博 {rec.get('pin_line')} 皇冠 {rec.get('crown_line')} "
+                f"({rec.get('cat')}) | 总进球 {rec.get('total')} → {rec.get('big25')}"
+            )
+        text = "\n".join(lines)
+        win = tk.Toplevel(self)
+        win.title("盘口对比统计")
+        win.transient(self)
+        tk.Label(
+            win, text=text, justify="left", font=("Microsoft YaHei", 10), padx=16, pady=12
+        ).pack()
+        ttk.Button(win, text="关闭", command=win.destroy).pack(pady=(0, 10))
+        win.geometry(f"+{self.winfo_rootx() + 100}+{self.winfo_rooty() + 120}")
+        self._append_log(f"对比统计: 样本 {len(self.ou_stats)} 场")
+
     def _mail_cfg_path(self):
         return os.path.join(app_dir(), "email_config.json")
 
@@ -1249,6 +1386,10 @@ class ScannerApp(tk.Tk):
                         if x.get("sid") == sid:
                             x["cur_score"] = score
                             x["cur_minute"] = minute
+                            break
+                    for _x in self.all_rows:
+                        if _x.get("sid") == sid:
+                            self._record_ou_if_finished(_x)
                             break
                     self._render(self.all_rows, set())
                     self._save_history()
