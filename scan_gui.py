@@ -3,6 +3,7 @@
 
 import csv
 import concurrent.futures
+import html as _html
 import json
 import os
 import queue
@@ -1210,7 +1211,7 @@ class ScannerApp(tk.Tk):
             day, tag="自动", reason=getattr(self, "_digest_reason", "")
         )
 
-    def _mail_worker(self, cfg, subject, body, attachment=None):
+    def _mail_worker(self, cfg, subject, body, attachment=None, html_body=None):
         try:
             if attachment:
                 from email.mime.base import MIMEBase
@@ -1218,7 +1219,13 @@ class ScannerApp(tk.Tk):
                 from email import encoders
 
                 msg = MIMEMultipart()
-                msg.attach(MIMEText(body, "plain", "utf-8"))
+                if html_body:
+                    alt = MIMEMultipart("alternative")
+                    alt.attach(MIMEText(body, "plain", "utf-8"))
+                    alt.attach(MIMEText(html_body, "html", "utf-8"))
+                    msg.attach(alt)
+                else:
+                    msg.attach(MIMEText(body, "plain", "utf-8"))
                 fname, data = attachment
                 part = MIMEBase("text", "csv")
                 part.set_payload(data)
@@ -1316,12 +1323,53 @@ class ScannerApp(tk.Tk):
         body = head + "\n\n" + text
         fname = f"建议下注_{day}.csv"
         data = ("\ufeff" + text).encode("utf-8")
+        html_body = self._digest_html(rows, head)
         threading.Thread(
             target=self._mail_worker,
-            args=(cfg, subject, body, (fname, data)),
+            args=(cfg, subject, body, (fname, data), html_body),
             daemon=True,
         ).start()
         self._append_log(f"{day} {tag} 已发送建议下注汇总: {len(rows)} 场")
+
+    def _digest_html(self, rows, head):
+        """汇总邮件彩色版: 完赛正确 -> 队伍红色✔, 错误 -> 黑色✘。"""
+
+        def esc(x):
+            return _html.escape(str(x if x is not None else ""))
+
+        parts = [
+            "<html><body style=\"font-family:'Microsoft YaHei',Arial,sans-serif;"
+            'font-size:14px;color:#222222;">',
+            f"<p>{esc(head)}</p>",
+            '<table border="1" cellspacing="0" cellpadding="6" '
+            'style="border-collapse:collapse;font-size:14px;">',
+            '<tr style="background:#f2f2f2;">'
+            "<th>联赛</th><th>开赛</th><th>比分/状态</th>"
+            "<th>主队</th><th>客队</th><th>下注层</th></tr>",
+        ]
+        for r in rows:
+            cell = sc.bet_cell(r)
+            if "✔" in cell:
+                color, mark = "#cc0000", " ✔"
+            elif "✘" in cell:
+                color, mark = "#000000", " ✘"
+            else:
+                color, mark = "#333333", ""
+            style = f"color:{color};"
+            if mark:
+                style += "font-weight:bold;"
+            parts.append(
+                "<tr>"
+                f"<td>{esc(r.get('league'))}</td>"
+                f"<td>{esc(r.get('time'))}</td>"
+                f"<td>{esc(sc.score_status(r))}</td>"
+                f'<td style="{style}">{esc(r.get("home"))}</td>'
+                f'<td style="{style}">{esc(r.get("away"))}{mark}</td>'
+                f"<td>{esc(cell)}</td>"
+                "</tr>"
+            )
+        parts.append("</table></body></html>")
+        return "".join(parts)
 
     def _proxy_cfg_path(self):
         return os.path.join(app_dir(), "proxy_config.json")
