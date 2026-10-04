@@ -12,3 +12,4 @@ proxy_config.json
 daily_mail_state.json
 *.spec
 backups/
+ou_compare_stats.json
