@@ -1324,57 +1324,46 @@ class ScannerApp(tk.Tk):
         body = head + "\n\n" + text
         fname = f"建议下注_{day}.csv"
         data = ("\ufeff" + text).encode("utf-8")
+        html_body = self._digest_html(rows, head)
         threading.Thread(
             target=self._mail_worker,
-            args=(cfg, subject, body, (fname, data)),
+            args=(cfg, subject, body, (fname, data), html_body),
             daemon=True,
         ).start()
         self._append_log(f"{day} {tag} 已发送建议下注汇总: {len(rows)} 场")
 
     def _digest_html(self, rows, head):
-        """(备用, 当前不使用)汇总邮件彩色版: 一行一场, 队伍带红/黑颜色。
-
-        完赛正确 -> 队伍红色✔, 完赛错误 -> 黑色✘。
-        """
+        """汇总邮件: 版面与纯文本版完全一致, 只把 ✔ 染成红色, 其它不变。"""
 
         def esc(x):
             return _html.escape(str(x if x is not None else ""))
 
-        lines = []
+        header = "联赛,开赛,比分/状态,主队,客队,下注层"
+        lines = [esc(header)]
         for r in rows:
             cell = sc.bet_cell(r)
-            if "✔" in cell:
-                color, mark = "#cc0000", " ✔"
-            elif "✘" in cell:
-                color, mark = "#000000", " ✘"
-            else:
-                color, mark = "#222222", ""
-            if mark:
-                # font+b 兼容性最好(网页邮箱/手机邮箱都能上色)
-                open_tag = f'<font color="{color}"><b>'
-                close_tag = "</b></font>"
-            else:
-                open_tag = close_tag = ""
+            # 只处理 ✔(红色), ✘ 和文字保持原样
+            cell_html = esc(cell).replace(
+                "✔", '<font color="#cc0000">✔</font>'
+            )
             lines.append(
                 ",".join(
                     [
                         esc(r.get("league")),
                         esc(r.get("time")),
                         esc(sc.score_status(r)),
-                        f'{open_tag}{esc(r.get("home"))}{close_tag}',
-                        f'{open_tag}{esc(r.get("away"))}{mark}{close_tag}',
-                        esc(cell),
+                        esc(r.get("home")),
+                        esc(r.get("away")),
+                        cell_html,
                     ]
                 )
             )
-        header = "联赛,开赛,比分/状态,主队,客队,下注层"
         return (
             "<html><body style=\"font-family:'Microsoft YaHei',Arial,sans-serif;"
             'font-size:14px;color:#222222;">'
-            f"<p style=\"margin:0 0 8px 0;\">{esc(head)}</p>"
             '<div style="white-space:pre-wrap;font-size:14px;line-height:1.6;">'
-            + esc(header)
-            + "\n"
+            + esc(head)
+            + "\n\n"
             + "\n".join(lines)
         ) + "</div></body></html>"
 
