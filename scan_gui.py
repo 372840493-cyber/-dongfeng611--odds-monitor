@@ -212,6 +212,9 @@ class ScannerApp(tk.Tk):
         ttk.Button(cfg2, text="对比统计", command=self._show_ou_stats).pack(
             side="left", padx=4
         )
+        ttk.Button(cfg2, text="滚球解读", command=self._open_live_tool).pack(
+            side="left", padx=4
+        )
         ttk.Button(cfg2, text="联赛筛选", command=self._open_league_filter).pack(
             side="left", padx=4
         )
@@ -791,6 +794,117 @@ class ScannerApp(tk.Tk):
             if len(self.all_rows) != before:
                 self._render(self.all_rows, set())
                 self._save_history()
+
+    def _live_verdict(self, a_line, a_big, a_small, b_line, b_big, b_small):
+        def one(name, line, big, small):
+            if big is None and small is None:
+                return None
+            if big is None:
+                if small <= 0.85:
+                    v, s_ = "强偏小", 2
+                elif small <= 0.90:
+                    v, s_ = "偏小", 1
+                elif small <= 0.95:
+                    v, s_ = "略偏小", 1
+                elif small <= 1.00:
+                    v, s_ = "中性偏大", 1
+                else:
+                    v, s_ = "偏大", 1
+                return (name, v, s_, f"{name}: 小球水{small} → {v}")
+            if small:
+                inv_b, inv_s = 1.0 / big, 1.0 / small
+                p_over = inv_b / (inv_b + inv_s)
+                d = p_over - 0.5
+                if d >= 0.08:
+                    v, s_ = "强偏大", 2
+                elif d >= 0.03:
+                    v, s_ = "偏大", 1
+                elif d <= -0.08:
+                    v, s_ = "强偏小", 2
+                elif d <= -0.03:
+                    v, s_ = "偏小", 1
+                else:
+                    v, s_ = "中性", 0
+                return (name, v, s_, f"{name}: 大{big}/小{small} → 去水后大球概率{p_over*100:.0f}%")
+            if big <= 0.85:
+                v, s_ = "强偏大", 2
+            elif big <= 0.90:
+                v, s_ = "偏大", 1
+            elif big <= 0.95:
+                v, s_ = "略偏大", 1
+            elif big <= 1.00:
+                v, s_ = "中性偏小", -1
+            else:
+                v, s_ = "偏小", 1
+            return (name, v, s_, f"{name}: 大球水{big} → {v}")
+
+        items = [one("A", a_line, a_big, a_small), one("B", b_line, b_big, b_small)]
+        items = [x for x in items if x]
+        if not items:
+            return "请至少填写一家的『大球水位』"
+        reasons = [x[3] for x in items]
+        dirs = []
+        for _n, v, s_, _r in items:
+            if "大" in v and "小" not in v:
+                dirs.append(("大", s_))
+            elif "小" in v:
+                dirs.append(("小", s_))
+        if not dirs:
+            verdict = "中性（没有明显偏向，建议观望）"
+        elif all(d[0] == dirs[0][0] for d in dirs):
+            strong = max(d[1] for d in dirs)
+            side = "偏大" if dirs[0][0] == "大" else "偏小"
+            verdict = side + ("（强）" if strong >= 2 else "（中等）" if len(dirs) > 1 else "（弱）")
+        else:
+            verdict = "两家分歧 → 观望"
+        if a_line is not None and b_line is not None and abs(a_line - b_line) >= 0.25:
+            reasons.append(f"两家盘口相差 {abs(a_line-b_line):g}（A {a_line:g} / B {b_line:g}），注意分歧")
+        return "结论: " + verdict + "\n" + "\n".join(reasons)
+
+    def _open_live_tool(self):
+        win = tk.Toplevel(self)
+        win.title("滚球大小球解读")
+        win.transient(self)
+        win.resizable(False, False)
+        frm = ttk.Frame(win, padding=10)
+        frm.pack(fill="x")
+        labels = ["A盘口(如1/1.5)", "A大球水位", "A小球水位", "B盘口", "B大球水位", "B小球水位"]
+        entries = []
+        for i, label in enumerate(labels):
+            ttk.Label(frm, text=label).grid(row=i, column=0, sticky="w", pady=2)
+            e = ttk.Entry(frm, width=14)
+            e.grid(row=i, column=1, sticky="w", pady=2)
+            entries.append(e)
+        for e in entries[:3]:
+            e.insert(0, "")
+        out = tk.Text(win, width=46, height=8, font=("Microsoft YaHei", 10))
+        out.pack(padx=10, pady=(4, 6))
+
+        def run():
+            vals = [e.get().strip() for e in entries]
+
+            def num(x):
+                try:
+                    return float(x)
+                except ValueError:
+                    return None
+
+            def line(x):
+                return t.parse_line(x) if x else None
+
+            text = self._live_verdict(
+                line(vals[0]), num(vals[1]), num(vals[2]),
+                line(vals[3]), num(vals[4]), num(vals[5]),
+            )
+            out.delete("1.0", "end")
+            out.insert("1.0", text)
+
+        btns = ttk.Frame(win)
+        btns.pack(pady=(0, 10))
+        ttk.Button(btns, text="解读", command=run).pack(side="left", padx=8)
+        ttk.Button(btns, text="关闭", command=win.destroy).pack(side="left", padx=8)
+        win.geometry(f"+{self.winfo_rootx() + 120}+{self.winfo_rooty() + 140}")
+        self.wait_window(win)
 
     def _ou_stats_path(self):
         return os.path.join(app_dir(), "ou_compare_stats.json")
