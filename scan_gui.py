@@ -438,20 +438,7 @@ class ScannerApp(tk.Tk):
 
         while self.running and not self.stop_ev.is_set():
             now = datetime.now()
-            sids = []
-            for sid in list(self.live_sids):
-                ko = self.live_meta.get(sid)
-                if ko:
-                    try:
-                        ko_dt = datetime.strptime(ko, "%Y-%m-%d %H:%M")
-                        if now < ko_dt - timedelta(minutes=5):
-                            continue
-                    except (TypeError, ValueError):
-                        pass
-                if sid in self._live_done:
-                    continue
-                sids.append(sid)
-            # 官方即时比分: 完场判定 + 实时比分(一次请求覆盖全部场次)
+            # 官方即时比分: 完场判定 + 实时比分/分钟(一次请求覆盖全部场次)
             if self.running and not self.stop_ev.is_set():
                 self._feed_live = set()
                 try:
@@ -462,20 +449,40 @@ class ScannerApp(tk.Tk):
                     st = states.get(sid)
                     if not st:
                         continue
-                    self._feed_live.add(sid)
                     score = (st.get("score") or "").strip()
                     if st.get("finished"):
-                        if score and self._feed_seen.get(sid) != ("完场", score):
+                        if not score:
+                            continue
+                        self._feed_live.add(sid)
+                        if self._feed_seen.get(sid) != ("完场", score):
                             self._feed_seen[sid] = ("完场", score)
                             self._live_done.add(sid)
                             self.events.put(("finish", sid, score))
                         continue
                     if not score:
                         continue
-                    minute = self._est_minute(sid, st, now)
+                    self._feed_live.add(sid)
+                    try:
+                        minute = self._est_minute(sid, st, now)
+                    except Exception:
+                        minute = ""
                     if self._feed_seen.get(sid) != (minute, score):
                         self._feed_seen[sid] = (minute, score)
                         self.events.put(("live", sid, score, minute))
+            # 官方即时比分已覆盖的场次不再逐场拉盘口页(省请求, 也避免循环被拖住)
+            sids = []
+            for sid in list(self.live_sids):
+                if sid in self._live_done or sid in self._feed_live:
+                    continue
+                ko = self.live_meta.get(sid)
+                if ko:
+                    try:
+                        ko_dt = datetime.strptime(ko, "%Y-%m-%d %H:%M")
+                        if now < ko_dt - timedelta(minutes=5):
+                            continue
+                    except (TypeError, ValueError):
+                        pass
+                sids.append(sid)
             if sids and self.running:
                 with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
                     fut_map = {
