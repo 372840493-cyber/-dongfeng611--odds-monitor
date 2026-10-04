@@ -555,6 +555,34 @@ class ScannerApp(tk.Tk):
                             f" | 皇冠 {sc.fmt_odds(_c2, r.get('c2_cur_big'), r.get('c2_cur_small'))}"
                             f"（{_cmp}）"
                         )
+                        _reason = []
+                        if _al is None or _a2 is None:
+                            _reason.append("亚盘数据不全")
+                        elif _al * _a2 <= 0:
+                            _reason.append("两家亚盘方向不一致")
+                        else:
+                            _wh = r.get("ah_cur_water_h")
+                            _wa = r.get("ah_cur_water_a")
+                            if _wh and _wa:
+                                _ih, _ia = 1.0 / _wh, 1.0 / _wa
+                                _ph = _ih / (_ih + _ia)
+                                _prob = _ph if _al >= 0 else 1.0 - _ph
+                                if _prob < 0.55:
+                                    _reason.append(f"亚盘强度{_prob*100:.0f}%<55%")
+                                else:
+                                    _reason.append(f"亚盘强度{_prob*100:.0f}%")
+                            else:
+                                _reason.append("亚盘水位缺失")
+                        _osig = sc.ou_signal(r) or "无"
+                        _oscore = sc.size_score(r)["total"]
+                        _reason.append(f"大小球信号:{_osig}")
+                        _reason.append(f"大小球评分{_oscore}/35")
+                        _pf = r.get("platform") or {}
+                        if _pf:
+                            _reason.append(
+                                f"全平台主流{_pf.get('top')}({_pf.get('top_pct')}%)"
+                            )
+                        extra += "\n变化原因: " + " ｜ ".join(_reason)
                     body = (
                         f"开赛时间: {ko}\n"
                         f"联赛: {info.get('league', '')}\n"
