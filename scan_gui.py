@@ -72,6 +72,8 @@ class ScannerApp(tk.Tk):
         self.worker = None
         self.score_thread = None
         self._last_live = {}
+        self._feed_seen = {}
+        self._live_done = set()
         self.live_meta = {}
         self.live_info = {}
         self._rechecked = set()
@@ -277,6 +279,12 @@ class ScannerApp(tk.Tk):
         self._rechecked.clear()
         self._score_verified.clear()
         self._prematch_notified.clear()
+        self._feed_seen.clear()
+        self._live_done = {
+            str(r.get("sid"))
+            for r in self.all_rows
+            if (r.get("live_state") or "").strip() == "-1"
+        }
         for r in self.all_rows:
             sid = str(r.get("sid"))
             self.live_info[sid] = {
@@ -438,7 +446,29 @@ class ScannerApp(tk.Tk):
                             continue
                     except (TypeError, ValueError):
                         pass
+                if sid in self._live_done:
+                    continue
                 sids.append(sid)
+            # 官方即时比分: 完场判定 + 实时比分(一次请求覆盖全部场次)
+            if self.running and not self.stop_ev.is_set():
+                try:
+                    states = t.fetch_live_states()
+                except Exception:
+                    states = {}
+                for sid in list(self.live_sids):
+                    st = states.get(sid)
+                    if not st:
+                        continue
+                    score = (st.get("score") or "").strip()
+                    if st.get("finished"):
+                        if score and self._feed_seen.get(sid) != score:
+                            self._feed_seen[sid] = score
+                            self._live_done.add(sid)
+                            self.events.put(("finish", sid, score))
+                    elif score:
+                        if self._feed_seen.get(sid) != score:
+                            self._feed_seen[sid] = score
+                            self.events.put(("score", sid, score))
             if sids and self.running:
                 with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
                     fut_map = {
@@ -1490,6 +1520,39 @@ class ScannerApp(tk.Tk):
                     for _x in self.all_rows:
                         if _x.get("sid") == sid:
                             self._record_ou_if_finished(_x)
+                            break
+                    self._render(self.all_rows, set())
+                    self._save_history()
+                    self._maybe_auto_clear()
+                elif kind == "score":
+                    # 官方即时比分刷新(不改动盘口页的分钟)
+                    sid, score = ev[1], ev[2]
+                    hit = False
+                    for x in self.all_rows:
+                        if x.get("sid") == sid and score and (
+                            x.get("cur_score") or ""
+                        ) != score:
+                            x["cur_score"] = score
+                            hit = True
+                            break
+                    if hit:
+                        self._render(self.all_rows, set())
+                        self._save_history()
+                        self._maybe_auto_clear()
+                elif kind == "finish":
+                    # 官方即时比分已判定完场 -> 定格比分并立即结算
+                    sid, score = ev[1], ev[2]
+                    for x in self.all_rows:
+                        if x.get("sid") == sid:
+                            if score:
+                                x["cur_score"] = score
+                            x["live_state"] = "-1"
+                            self._append_log(
+                                "🏁 完场: "
+                                f"{x.get('league', '')} {x.get('home', '')} vs "
+                                f"{x.get('away', '')} {score}"
+                            )
+                            self._record_ou_if_finished(x)
                             break
                     self._render(self.all_rows, set())
                     self._save_history()
