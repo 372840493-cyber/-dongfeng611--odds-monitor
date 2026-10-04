@@ -438,20 +438,7 @@ class ScannerApp(tk.Tk):
 
         while self.running and not self.stop_ev.is_set():
             now = datetime.now()
-            sids = []
-            for sid in list(self.live_sids):
-                ko = self.live_meta.get(sid)
-                if ko:
-                    try:
-                        ko_dt = datetime.strptime(ko, "%Y-%m-%d %H:%M")
-                        if now < ko_dt - timedelta(minutes=5):
-                            continue
-                    except (TypeError, ValueError):
-                        pass
-                if sid in self._live_done:
-                    continue
-                sids.append(sid)
-            # 官方即时比分: 完场判定 + 实时比分(一次请求覆盖全部场次)
+            # 官方即时比分: 完场判定 + 实时比分/分钟(一次请求覆盖全部场次)
             if self.running and not self.stop_ev.is_set():
                 self._feed_live = set()
                 try:
@@ -462,20 +449,40 @@ class ScannerApp(tk.Tk):
                     st = states.get(sid)
                     if not st:
                         continue
-                    self._feed_live.add(sid)
                     score = (st.get("score") or "").strip()
                     if st.get("finished"):
-                        if score and self._feed_seen.get(sid) != ("完场", score):
+                        if not score:
+                            continue
+                        self._feed_live.add(sid)
+                        if self._feed_seen.get(sid) != ("完场", score):
                             self._feed_seen[sid] = ("完场", score)
                             self._live_done.add(sid)
                             self.events.put(("finish", sid, score))
                         continue
                     if not score:
                         continue
-                    minute = self._est_minute(sid, st, now)
+                    self._feed_live.add(sid)
+                    try:
+                        minute = self._est_minute(sid, st, now)
+                    except Exception:
+                        minute = ""
                     if self._feed_seen.get(sid) != (minute, score):
                         self._feed_seen[sid] = (minute, score)
                         self.events.put(("live", sid, score, minute))
+            # 官方即时比分已覆盖的场次不再逐场拉盘口页(省请求, 也避免循环被拖住)
+            sids = []
+            for sid in list(self.live_sids):
+                if sid in self._live_done or sid in self._feed_live:
+                    continue
+                ko = self.live_meta.get(sid)
+                if ko:
+                    try:
+                        ko_dt = datetime.strptime(ko, "%Y-%m-%d %H:%M")
+                        if now < ko_dt - timedelta(minutes=5):
+                            continue
+                    except (TypeError, ValueError):
+                        pass
+                sids.append(sid)
             if sids and self.running:
                 with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
                     fut_map = {
@@ -704,33 +711,65 @@ class ScannerApp(tk.Tk):
             time.sleep(0.5)
 
     def _est_minute(self, sid, st, now):
-        """用官方即时比分状态 + 开赛时间推算当前比赛分钟。"""
-        from datetime import datetime
+        """用官方即时比分状态/阶段开始时间推算当前比赛分钟。
+
+        官方接口只给"上半场/中场/下半场"和最近一次阶段变化时间,
+        所以分钟是推算值, 显示时带"约"字。
+        """
+        from datetime import datetime, timedelta
 
         phase = (st.get("state") or "").strip()
         if phase == "2":
             return "中场"
         if phase not in ("1", "3", "4", "5"):
             return ""
-        ko = self.live_meta.get(sid) or st.get("ko_time") or ""
+        ko_dt = None
+        ko = self.live_meta.get(sid) or ""
         try:
-            if len(ko) > 5:
-                ko_dt = datetime.strptime(ko, "%Y-%m-%d %H:%M")
-            else:
-                ko_dt = datetime.strptime(
-                    now.strftime("%Y-%m-%d ") + ko.strip(), "%Y-%m-%d %H:%M"
-                )
+            ko_dt = datetime.strptime(ko, "%Y-%m-%d %H:%M")
         except (TypeError, ValueError):
-            return ""
-        mins = int((now - ko_dt).total_seconds() // 60)
+            ko_dt = None
+        ref_dt = None
+        try:
+            p = [int(x) for x in (st.get("updated") or "").split(",")]
+            if len(p) >= 6:
+                # 该字段的日期部分不可靠(月份从 0 起算), 只取时分秒对齐当天
+                ref_dt = datetime(
+                    now.year, now.month, now.day, p[3], p[4], p[5]
+                )
+                if (ref_dt - now).total_seconds() > 12 * 3600:
+                    ref_dt = ref_dt - timedelta(days=1)
+                elif (now - ref_dt).total_seconds() > 12 * 3600:
+                    ref_dt = ref_dt + timedelta(days=1)
+        except (TypeError, ValueError):
+            ref_dt = None
         if phase == "1":
-            return str(max(1, min(45, mins)))
-        play = mins - 15
-        if play < 46:
-            play = 46
-        if play > 90:
-            return "90+"
-        return str(play)
+            base = ko_dt
+            if ref_dt and (
+                base is None
+                or 0 <= (ref_dt - base).total_seconds() / 60.0 <= 20
+            ):
+                base = ref_dt
+            if base is None:
+                return ""
+            m = int((now - base).total_seconds() // 60)
+            return "约%d'" % max(1, min(45, m))
+        if (
+            ko_dt
+            and ref_dt
+            and 50 <= (ref_dt - ko_dt).total_seconds() / 60.0 <= 80
+        ):
+            # ref 看起来就是下半场开始时间
+            m = 45 + int((now - ref_dt).total_seconds() // 60)
+        elif ko_dt:
+            m = int((now - ko_dt).total_seconds() // 60) - 15
+        else:
+            return ""
+        if m < 46:
+            m = 46
+        if m > 90:
+            return "约90+'"
+        return "约%d'" % m
 
     def _on_sound_select(self, event=None):
         val = self.sound_cb.get()
