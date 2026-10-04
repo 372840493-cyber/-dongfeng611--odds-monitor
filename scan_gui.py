@@ -716,7 +716,7 @@ class ScannerApp(tk.Tk):
         官方接口只给"上半场/中场/下半场"和最近一次阶段变化时间,
         所以分钟是推算值, 显示时带"约"字。
         """
-        from datetime import datetime
+        from datetime import datetime, timedelta
 
         phase = (st.get("state") or "").strip()
         if phase == "2":
@@ -733,7 +733,14 @@ class ScannerApp(tk.Tk):
         try:
             p = [int(x) for x in (st.get("updated") or "").split(",")]
             if len(p) >= 6:
-                ref_dt = datetime(p[0], p[1], p[2], p[3], p[4], p[5])
+                # 该字段的日期部分不可靠(月份从 0 起算), 只取时分秒对齐当天
+                ref_dt = datetime(
+                    now.year, now.month, now.day, p[3], p[4], p[5]
+                )
+                if (ref_dt - now).total_seconds() > 12 * 3600:
+                    ref_dt = ref_dt - timedelta(days=1)
+                elif (now - ref_dt).total_seconds() > 12 * 3600:
+                    ref_dt = ref_dt + timedelta(days=1)
         except (TypeError, ValueError):
             ref_dt = None
         if phase == "1":
