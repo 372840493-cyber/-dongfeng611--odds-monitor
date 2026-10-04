@@ -52,7 +52,6 @@ class ScannerApp(tk.Tk):
         ("c2open", "皇冠初盘", 92),
         ("c2cur", "皇冠即时", 92),
         ("bet", "下注层", 260),
-        ("note", "备注", 110),
     ]
 
     COMPANY_NAMES = {
@@ -1467,8 +1466,6 @@ class ScannerApp(tk.Tk):
                 tag = "diff2"
             else:
                 tag = ""
-            manual = self.notes.get(str(r["sid"]), "")
-            note_txt = manual if manual else mark
             bet_txt = sc.betting_reference(r)
             bet_cell = sc.bet_cell(r)
             row_tags = []
@@ -1500,7 +1497,6 @@ class ScannerApp(tk.Tk):
                         r.get("c2_cur_line"), r.get("c2_cur_big"), r.get("c2_cur_small")
                     ),
                     bet_cell,
-                    note_txt,
                 ),
                 tags=tuple(row_tags),
             )
