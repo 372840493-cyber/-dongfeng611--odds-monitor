@@ -1342,28 +1342,22 @@ class ScannerApp(tk.Tk):
         lines = [esc(header)]
         for r in rows:
             cell = sc.bet_cell(r)
-            if "✔" in cell:
-                # 结算正确: 队伍名与 ✔ 都是红色
-                open_tag, close_tag = '<font color="#cc0000">', "</font>"
-                cell_html = esc(cell).replace(
-                    "✔", '<font color="#cc0000">✔</font>'
-                )
-            else:
-                # 其它(含 ✘)保持原样不动
-                open_tag = close_tag = ""
-                cell_html = esc(cell)
-            lines.append(
-                ",".join(
-                    [
-                        esc(r.get("league")),
-                        esc(r.get("time")),
-                        esc(sc.score_status(r)),
-                        f'{open_tag}{esc(r.get("home"))}{close_tag}',
-                        f'{open_tag}{esc(r.get("away"))}{close_tag}',
-                        cell_html,
-                    ]
-                )
+            line = ",".join(
+                [
+                    esc(r.get("league")),
+                    esc(r.get("time")),
+                    esc(sc.score_status(r)),
+                    esc(r.get("home")),
+                    esc(r.get("away")),
+                    esc(cell),
+                ]
             )
+            if "✔" in cell:
+                # 结算正确: 整行(联赛/时间/比分/队伍/下注层/✔)全部红色
+                line = f'<font color="#cc0000">{line}</font>'
+            else:
+                pass  # 其它(含 ✘)保持原样不动
+            lines.append(line)
         return (
             "<html><body style=\"font-family:'Microsoft YaHei',Arial,sans-serif;"
             'font-size:14px;color:#222222;">'
