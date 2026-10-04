@@ -711,7 +711,11 @@ class ScannerApp(tk.Tk):
             time.sleep(0.5)
 
     def _est_minute(self, sid, st, now):
-        """用官方即时比分状态 + 开赛时间推算当前比赛分钟。"""
+        """用官方即时比分状态/阶段开始时间推算当前比赛分钟。
+
+        官方接口只给"上半场/中场/下半场"和最近一次阶段变化时间,
+        所以分钟是推算值, 显示时带"约"字。
+        """
         from datetime import datetime
 
         phase = (st.get("state") or "").strip()
@@ -719,25 +723,46 @@ class ScannerApp(tk.Tk):
             return "中场"
         if phase not in ("1", "3", "4", "5"):
             return ""
-        ko = self.live_meta.get(sid) or st.get("ko_time") or ""
+        ko_dt = None
+        ko = self.live_meta.get(sid) or ""
         try:
-            if len(ko) > 5:
-                ko_dt = datetime.strptime(ko, "%Y-%m-%d %H:%M")
-            else:
-                ko_dt = datetime.strptime(
-                    now.strftime("%Y-%m-%d ") + ko.strip(), "%Y-%m-%d %H:%M"
-                )
+            ko_dt = datetime.strptime(ko, "%Y-%m-%d %H:%M")
         except (TypeError, ValueError):
-            return ""
-        mins = int((now - ko_dt).total_seconds() // 60)
+            ko_dt = None
+        ref_dt = None
+        try:
+            p = [int(x) for x in (st.get("updated") or "").split(",")]
+            if len(p) >= 6:
+                ref_dt = datetime(p[0], p[1], p[2], p[3], p[4], p[5])
+        except (TypeError, ValueError):
+            ref_dt = None
         if phase == "1":
-            return str(max(1, min(45, mins)))
-        play = mins - 15
-        if play < 46:
-            play = 46
-        if play > 90:
-            return "90+"
-        return str(play)
+            base = ko_dt
+            if ref_dt and (
+                base is None
+                or 0 <= (ref_dt - base).total_seconds() / 60.0 <= 20
+            ):
+                base = ref_dt
+            if base is None:
+                return ""
+            m = int((now - base).total_seconds() // 60)
+            return "约%d'" % max(1, min(45, m))
+        if (
+            ko_dt
+            and ref_dt
+            and 50 <= (ref_dt - ko_dt).total_seconds() / 60.0 <= 80
+        ):
+            # ref 看起来就是下半场开始时间
+            m = 45 + int((now - ref_dt).total_seconds() // 60)
+        elif ko_dt:
+            m = int((now - ko_dt).total_seconds() // 60) - 15
+        else:
+            return ""
+        if m < 46:
+            m = 46
+        if m > 90:
+            return "约90+'"
+        return "约%d'" % m
 
     def _on_sound_select(self, event=None):
         val = self.sound_cb.get()
