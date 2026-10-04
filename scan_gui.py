@@ -98,6 +98,7 @@ class ScannerApp(tk.Tk):
         self.league_kw = []
         self._load_league_filter()
         self.all_leagues = self._load_all_leagues()
+        self.only_tend = self._load_only_tend()
         self.proxy_cfg = self._load_proxy_cfg()
         t.set_proxy(
             self.proxy_cfg.get("host", "127.0.0.1"),
@@ -202,6 +203,13 @@ class ScannerApp(tk.Tk):
         self.auto_clear_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(
             cfg, text="完场自动清空", variable=self.auto_clear_var
+        ).pack(side="left", padx=4)
+        self.only_tend_var = tk.BooleanVar(value=self.only_tend)
+        ttk.Checkbutton(
+            cfg,
+            text="只看红色倾向",
+            variable=self.only_tend_var,
+            command=self._toggle_only_tend,
         ).pack(side="left", padx=4)
         ttk.Button(cfg2, text="汇总发送", command=self._send_digest_now).pack(
             side="left", padx=4
@@ -1404,16 +1412,68 @@ class ScannerApp(tk.Tk):
                 return False
         return False
 
-    def _toggle_all_leagues(self):
-        self.all_leagues = bool(self.all_leagues_var.get())
+    def _load_only_tend(self):
+        p = self._app_settings_path()
+        if os.path.exists(p):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                return bool(data.get("only_tend"))
+            except Exception:
+                return False
+        return False
+
+    def _save_app_settings(self):
+        """把界面开关写进 app_settings.json(保留其它设置)。"""
+        p = self._app_settings_path()
+        data = {}
+        if os.path.exists(p):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    data = json.load(f) or {}
+            except Exception:
+                data = {}
+        data["all_leagues"] = bool(
+            self.all_leagues_var.get()
+            if getattr(self, "all_leagues_var", None)
+            else self.all_leagues
+        )
+        data["only_tend"] = bool(
+            self.only_tend_var.get()
+            if getattr(self, "only_tend_var", None)
+            else self.only_tend
+        )
         try:
-            with open(self._app_settings_path(), "w", encoding="utf-8") as f:
-                json.dump({"all_leagues": self.all_leagues}, f, ensure_ascii=False)
+            with open(p, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False)
         except Exception as e:
             self._append_log(f"设置保存失败: {e}")
+
+    def _is_tend(self, r):
+        """是否有红色倾向(含参考倾向)。"""
+        if "倾向" in (r.get("bet_snapshot") or ""):
+            return True
+        if "倾向" in (r.get("bet_snapshot2") or ""):
+            return True
+        return "倾向" in sc.betting_reference(r)
+
+    def _toggle_only_tend(self):
+        self.only_tend = bool(self.only_tend_var.get())
+        self._save_app_settings()
+        self._append_log(
+            "已切换为: 只看红色倾向(隐藏不建议下注的比赛)"
+            if self.only_tend
+            else "已切换为: 显示全部比赛"
+        )
+        self._render(self.all_rows, set())
+
+    def _toggle_all_leagues(self):
+        self.all_leagues = bool(self.all_leagues_var.get())
+        self._save_app_settings()
         self._append_log(
             "已切换为: 全联赛(不过滤)" if self.all_leagues else "已切换为: 按联赛名单过滤"
         )
+        self._render(self.all_rows, set())
 
     def _league_ok(self, name):
         if not self.league_kw:
@@ -1641,6 +1701,8 @@ class ScannerApp(tk.Tk):
         all_rows = self._sort_rows(rows)
         self.last_rows = all_rows
         disp = all_rows
+        if self.only_tend:
+            disp = [r for r in all_rows if self._is_tend(r)]
         self.tree.delete(*self.tree.get_children())
         for r in disp:
             mark = ""
@@ -1692,7 +1754,12 @@ class ScannerApp(tk.Tk):
                 ),
                 tags=tuple(row_tags),
             )
-        self.status.config(text=f"运行中 · 本轮达标 {len(disp)} 场")
+        if self.only_tend:
+            self.status.config(
+                text=f"运行中 · 只看倾向 {len(disp)}/{len(all_rows)} 场"
+            )
+        else:
+            self.status.config(text=f"运行中 · 本轮达标 {len(disp)} 场")
 
     def _time_key(self, r):
         ko = (r.get("kickoff") or "").strip()
