@@ -517,7 +517,7 @@ class ScannerApp(tk.Tk):
                     self.live_info.setdefault(sid, {})["t15_crown"] = r.get(
                         "c2_cur_line"
                     )
-                    cur_tend = sc.bet_cell(r)
+                    cur_tend = sc.betting_reference(r)
 
                     def _norm(x):
                         return re.sub(r"[✔✘\s]|走盘", "", str(x))
@@ -855,7 +855,10 @@ class ScannerApp(tk.Tk):
 
         info = self.live_info.get(sid, {})
         b_t15 = _base(info.get("t15_pin"), info.get("t15_crown"))
-        b_lock = _base(row.get("lock_pin_line"), row.get("lock_crown_line"))
+        b_lock = _base(
+            row.get("lock_pin_line") or row.get("lock2_pin_line"),
+            row.get("lock_crown_line") or row.get("lock2_crown_line"),
+        )
         b_last = _base(row.get("cur_line"), row.get("c2_cur_line"))
         if not (b_t15 or b_lock or b_last):
             return
@@ -1372,9 +1375,9 @@ class ScannerApp(tk.Tk):
                     self._append_log(ev[1])
                 elif kind == "row":
                     r, is_new = ev[1], ev[2]
-                    old_snap = next(
+                    old_row = next(
                         (
-                            x.get("bet_snapshot")
+                            x
                             for x in self.all_rows
                             if x.get("sid") == r["sid"]
                         ),
@@ -1383,8 +1386,17 @@ class ScannerApp(tk.Tk):
                     self.all_rows = [
                         x for x in self.all_rows if x.get("sid") != r["sid"]
                     ]
-                    if old_snap:
-                        r["bet_snapshot"] = old_snap
+                    if old_row:
+                        for _k in (
+                            "bet_snapshot",
+                            "bet_snapshot2",
+                            "lock_pin_line",
+                            "lock_crown_line",
+                            "lock2_pin_line",
+                            "lock2_crown_line",
+                        ):
+                            if old_row.get(_k) is not None:
+                                r[_k] = old_row[_k]
                     if r.get("bet_snapshot"):
                         self.live_info.setdefault(r["sid"], {})[
                             "snapshot"
@@ -1401,12 +1413,30 @@ class ScannerApp(tk.Tk):
                             f"→ {sc.fmt_odds(r.get('cur_line'), r.get('cur_big'), r.get('cur_small'))} "
                             f"盘差 {r['diff']}"
                         )
-                    has_tend = "倾向" in sc.betting_reference(r)
+                    cur_txt = sc.betting_reference(r)
+                    has_tend = "倾向" in cur_txt
                     if has_tend and "bet_snapshot" not in r:
-                        r["bet_snapshot"] = sc.betting_reference(r)
+                        r["bet_snapshot"] = cur_txt
                         r["lock_pin_line"] = r.get("cur_line")
                         r["lock_crown_line"] = r.get("c2_cur_line")
                         self._save_history()
+                    elif has_tend and not r.get("bet_snapshot2"):
+                        def _mkt(x):
+                            if "[亚盘]" in x:
+                                return "亚盘"
+                            if "[大小]" in x:
+                                return "大小"
+                            return "?"
+
+                        if _mkt(cur_txt) != _mkt(r.get("bet_snapshot") or ""):
+                            r["bet_snapshot2"] = cur_txt
+                            r["lock2_pin_line"] = r.get("cur_line")
+                            r["lock2_crown_line"] = r.get("c2_cur_line")
+                            self._save_history()
+                            self._append_log(
+                                f"已追加参考倾向: {r.get('league', '')} "
+                                f"{r.get('home', '')} vs {r.get('away', '')} → {cur_txt}"
+                            )
                     if has_tend and r["sid"] not in self.tend_sounded:
                         self.tend_sounded.add(r["sid"])
                         self._append_log(

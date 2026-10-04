@@ -1,0 +1,48 @@
+[
+ {
+  "sid": "3087022",
+  "date": "2026-10-04 15:30",
+  "league": "香港甲",
+  "home": "公民",
+  "away": "天行元朗",
+  "pin_line": 3.5,
+  "crown_line": 3.75,
+  "diff": 0.25,
+  "cat": "皇冠高盘",
+  "total": 3,
+  "big25": "大",
+  "result_vs_pin": "小",
+  "t15": null,
+  "lock": null,
+  "last": {
+   "pin": 3.5,
+   "crown": 3.75,
+   "diff": 0.25,
+   "cat": "皇冠高盘",
+   "result": "小"
+  }
+ },
+ {
+  "sid": "3087024",
+  "date": "2026-10-04 15:30",
+  "league": "香港甲",
+  "home": "南华",
+  "away": "东升",
+  "pin_line": 2.75,
+  "crown_line": 2.75,
+  "diff": 0.0,
+  "cat": "两家同盘",
+  "total": 1,
+  "big25": "小",
+  "result_vs_pin": "小",
+  "t15": null,
+  "lock": null,
+  "last": {
+   "pin": 2.75,
+   "crown": 2.75,
+   "diff": 0.0,
+   "cat": "两家同盘",
+   "result": "小"
+  }
+ }
+]
