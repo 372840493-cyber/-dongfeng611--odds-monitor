@@ -493,6 +493,10 @@ def score_status(r):
                 pass
         if minute and minute.isdigit():
             return f"{score} {minute}'"
+        if minute == "90+":
+            return f"{score} 90+'"
+        if minute in ("中场", "上半场", "下半场"):
+            return f"{score} {minute}"
         return f"进行中 {score}"
     if ko:
         try:

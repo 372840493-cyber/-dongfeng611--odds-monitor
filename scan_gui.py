@@ -73,6 +73,7 @@ class ScannerApp(tk.Tk):
         self.score_thread = None
         self._last_live = {}
         self._feed_seen = {}
+        self._feed_live = set()
         self._live_done = set()
         self.live_meta = {}
         self.live_info = {}
@@ -280,6 +281,7 @@ class ScannerApp(tk.Tk):
         self._score_verified.clear()
         self._prematch_notified.clear()
         self._feed_seen.clear()
+        self._feed_live.clear()
         self._live_done = {
             str(r.get("sid"))
             for r in self.all_rows
@@ -451,6 +453,7 @@ class ScannerApp(tk.Tk):
                 sids.append(sid)
             # 官方即时比分: 完场判定 + 实时比分(一次请求覆盖全部场次)
             if self.running and not self.stop_ev.is_set():
+                self._feed_live = set()
                 try:
                     states = t.fetch_live_states()
                 except Exception:
@@ -459,16 +462,20 @@ class ScannerApp(tk.Tk):
                     st = states.get(sid)
                     if not st:
                         continue
+                    self._feed_live.add(sid)
                     score = (st.get("score") or "").strip()
                     if st.get("finished"):
-                        if score and self._feed_seen.get(sid) != score:
-                            self._feed_seen[sid] = score
+                        if score and self._feed_seen.get(sid) != ("完场", score):
+                            self._feed_seen[sid] = ("完场", score)
                             self._live_done.add(sid)
                             self.events.put(("finish", sid, score))
-                    elif score:
-                        if self._feed_seen.get(sid) != score:
-                            self._feed_seen[sid] = score
-                            self.events.put(("score", sid, score))
+                        continue
+                    if not score:
+                        continue
+                    minute = self._est_minute(sid, st, now)
+                    if self._feed_seen.get(sid) != (minute, score):
+                        self._feed_seen[sid] = (minute, score)
+                        self.events.put(("live", sid, score, minute))
             if sids and self.running:
                 with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
                     fut_map = {
@@ -484,6 +491,9 @@ class ScannerApp(tk.Tk):
                         except Exception:
                             continue
                         if not d:
+                            continue
+                        if sid in self._feed_live:
+                            # 分钟/比分由官方即时比分提供(盘口页常常停在最后一次变盘)
                             continue
                         score = (d.get("cur_score") or "").strip()
                         minute = (d.get("cur_minute") or "").strip()
@@ -692,6 +702,35 @@ class ScannerApp(tk.Tk):
         end = time.time() + secs
         while self.running and time.time() < end:
             time.sleep(0.5)
+
+    def _est_minute(self, sid, st, now):
+        """用官方即时比分状态 + 开赛时间推算当前比赛分钟。"""
+        from datetime import datetime
+
+        phase = (st.get("state") or "").strip()
+        if phase == "2":
+            return "中场"
+        if phase not in ("1", "3", "4", "5"):
+            return ""
+        ko = self.live_meta.get(sid) or st.get("ko_time") or ""
+        try:
+            if len(ko) > 5:
+                ko_dt = datetime.strptime(ko, "%Y-%m-%d %H:%M")
+            else:
+                ko_dt = datetime.strptime(
+                    now.strftime("%Y-%m-%d ") + ko.strip(), "%Y-%m-%d %H:%M"
+                )
+        except (TypeError, ValueError):
+            return ""
+        mins = int((now - ko_dt).total_seconds() // 60)
+        if phase == "1":
+            return str(max(1, min(45, mins)))
+        play = mins - 15
+        if play < 46:
+            play = 46
+        if play > 90:
+            return "90+"
+        return str(play)
 
     def _on_sound_select(self, event=None):
         val = self.sound_cb.get()
@@ -1524,21 +1563,6 @@ class ScannerApp(tk.Tk):
                     self._render(self.all_rows, set())
                     self._save_history()
                     self._maybe_auto_clear()
-                elif kind == "score":
-                    # 官方即时比分刷新(不改动盘口页的分钟)
-                    sid, score = ev[1], ev[2]
-                    hit = False
-                    for x in self.all_rows:
-                        if x.get("sid") == sid and score and (
-                            x.get("cur_score") or ""
-                        ) != score:
-                            x["cur_score"] = score
-                            hit = True
-                            break
-                    if hit:
-                        self._render(self.all_rows, set())
-                        self._save_history()
-                        self._maybe_auto_clear()
                 elif kind == "finish":
                     # 官方即时比分已判定完场 -> 定格比分并立即结算
                     sid, score = ev[1], ev[2]
