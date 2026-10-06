@@ -67,6 +67,7 @@ class ScannerApp(tk.Tk):
             "东风‑61 洲际导弹  -作者：程序猿虾"
             "（本软件只提供数据参考，禁止非法赌博行为，如有违法行为后果自负！）"
         )
+        self._set_app_icon()
         self.geometry("1250x920")
         self.running = False
         self.stop_ev = threading.Event()
@@ -147,6 +148,22 @@ class ScannerApp(tk.Tk):
         self.after(200, self._poll)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.tree.bind("<Double-1>", self._on_double_click)
+
+    def _set_app_icon(self):
+        """窗口/任务栏图标(app.ico 放在程序旁边)。"""
+        for name in ("app.ico", "app.png"):
+            p = os.path.join(app_dir(), name)
+            if not os.path.exists(p):
+                continue
+            try:
+                if name.endswith(".ico"):
+                    self.iconbitmap(p)
+                else:
+                    img = tk.PhotoImage(file=p)
+                    self.iconphoto(True, img)
+                    self._icon_img = img
+            except Exception:
+                pass
 
     def _build(self):
         tk.Label(
