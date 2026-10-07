@@ -151,6 +151,73 @@ class ScannerApp(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.tree.bind("<Double-1>", self._on_double_click)
 
+    def _upwater_stats(self):
+        """累计样本里"升盘+升水"的命中情况, 返回 (场数, 小球数)。"""
+        n = 0
+        small = 0
+        for x in self.ou_stats:
+            sig = str(x.get("sig_lock") or "")
+            if "升盘阻大" in sig:
+                n += 1
+                if x.get("result_vs_pin") == "小":
+                    small += 1
+        return n, small
+
+    def _ou_advice(self, r):
+        """按平博大小球盘口动作给建议: 升盘 + 升水 -> 买小球。"""
+        o_line, o_big = r.get("open_line"), r.get("open_big")
+        c_line, c_big = r.get("cur_line"), r.get("cur_big")
+        if o_line is None or o_big is None or c_line is None or c_big is None:
+            return None
+        up = c_line > o_line + 1e-9
+        down = c_line < o_line - 1e-9
+        w_up = c_big > o_big + 0.02
+        w_down = c_big < o_big - 0.02
+        if up and w_up:
+            act = f"升盘 + 升水（大球水位 {o_big:.2f}→{c_big:.2f}）"
+        elif up and w_down:
+            act = f"升盘 + 降水（大球水位 {o_big:.2f}→{c_big:.2f}）"
+        elif up:
+            act = f"升盘（大球水位 {o_big:.2f}→{c_big:.2f} 基本不变）"
+        elif down and w_down:
+            act = f"降盘 + 降水（大球水位 {o_big:.2f}→{c_big:.2f}）"
+        elif down and w_up:
+            act = f"降盘 + 升水（大球水位 {o_big:.2f}→{c_big:.2f}）"
+        elif down:
+            act = f"降盘（大球水位 {o_big:.2f}→{c_big:.2f}）"
+        else:
+            act = f"平盘（大球水位 {o_big:.2f}→{c_big:.2f}）"
+        return {
+            "act": act,
+            "buy_small": bool(up and w_up),
+            "open_txt": sc.fmt_odds(o_line, o_big, r.get("open_small")),
+            "cur_txt": sc.fmt_odds(c_line, c_big, r.get("cur_small")),
+            "line_txt": sc.fmt_line(c_line) if c_line is not None else "-",
+        }
+
+    def _ou_advice_text(self, r):
+        """15分钟复查用的大小球建议文字(没有数据则返回空串)。"""
+        adv = self._ou_advice(r)
+        if not adv:
+            return ""
+        n, small = self._upwater_stats()
+        pct = f"{small / n * 100:.0f}%" if n else "-"
+        txt = (
+            f"\n大小球(平博): 初盘 {adv['open_txt']} → 即时 {adv['cur_txt']}\n"
+            f"大小球动作: {adv['act']}\n"
+        )
+        if adv["buy_small"]:
+            txt += (
+                f"大小球建议: 【买小球 {adv['line_txt']}】"
+                f"（历史升盘+升水 {n} 场, 走小 {small} 场 {pct}）\n"
+            )
+        else:
+            txt += (
+                "大小球建议: 不买（当前不是「升盘+升水」；"
+                f"参考: 升盘+升水 {n} 场走小率 {pct}）\n"
+            )
+        return txt
+
     def _net_check(self):
         """一键体检: 即时比分 / 盘口直连 / 加速器代理, 结果写到日志。"""
         self._append_log("开始网络体检…")
@@ -779,6 +846,7 @@ class ScannerApp(tk.Tk):
                                 f"全平台主流{_pf.get('top')}({_pf.get('top_pct')}%)"
                             )
                         extra += "\n变化原因: " + " ｜ ".join(_reason)
+                    ou_txt = self._ou_advice_text(r)
                     body = (
                         f"开赛时间: {ko}\n"
                         f"联赛: {info.get('league', '')}\n"
@@ -786,6 +854,7 @@ class ScannerApp(tk.Tk):
                         f"客队: {info.get('away', '')}\n"
                         f"原始倾向: {snap}\n"
                         f"开赛前15分钟复查: {check_txt}{extra}\n"
+                        f"{ou_txt}"
                     )
                     subject = (
                         f"临场提醒(15分钟): {info.get('league', '')} "
@@ -833,6 +902,34 @@ class ScannerApp(tk.Tk):
                         if pf:
                             r["platform"] = pf
                         self.events.put(("row", r, False))
+                        # 没有原始倾向的场次: 只要15分钟时是"升盘+升水"也发大小球建议
+                        if not info.get("snapshot"):
+                            _adv = self._ou_advice(r)
+                            _advtxt = self._ou_advice_text(r)
+                            if _adv and _adv.get("buy_small") and _advtxt:
+                                _subj = (
+                                    f"大小球建议(15分钟): {info.get('league', '')} "
+                                    f"{info.get('home', '')} vs {info.get('away', '')}"
+                                )
+                                _body = (
+                                    f"开赛时间: {ko}\n"
+                                    f"联赛: {info.get('league', '')}\n"
+                                    f"主队: {info.get('home', '')}\n"
+                                    f"客队: {info.get('away', '')}\n"
+                                    f"{_advtxt}"
+                                )
+                                _cfg = self.mail_cfg
+                                if _cfg.get("enabled") and all(
+                                    _cfg.get(k) for k in ("sender", "auth", "to")
+                                ):
+                                    threading.Thread(
+                                        target=self._mail_worker,
+                                        args=(_cfg, _subj, _body),
+                                        daemon=True,
+                                    ).start()
+                                self.events.put(
+                                    ("log", f"大小球建议已发送: {_subj}")
+                                )
                 except Exception:
                     pass
             end = time.time() + 30
