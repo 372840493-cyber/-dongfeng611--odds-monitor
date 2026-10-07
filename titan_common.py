@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """titan007 (球探网) public data helpers: schedule ids + over/under page parsing."""
 
+import json
 import os
 import re
 import shutil
@@ -9,6 +10,9 @@ import subprocess
 import threading
 import time
 import urllib.request
+
+# Windows: 后台跑 netstat/tasklist/curl 时不要弹黑窗口
+_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 
 UA = {
     "User-Agent": (
@@ -162,7 +166,10 @@ def _curl_fetch(url, timeout=25, proxy=None):
     if proxy:
         args += ["-x", proxy]
     args.append(url)
-    r = subprocess.run(args, capture_output=True, timeout=int(timeout) + 5)
+    r = subprocess.run(
+        args, capture_output=True, timeout=int(timeout) + 5,
+        creationflags=_NO_WINDOW,
+    )
     if r.returncode != 0:
         raise RuntimeError(f"curl exit {r.returncode}: {r.stderr[:120]!r}")
     out = r.stdout
@@ -177,29 +184,188 @@ def _curl_fetch(url, timeout=25, proxy=None):
     return _decode(body)
 
 
-def fetch_text(url, timeout=25):
-    _throttle()
+_PROXY_FIRST_HOSTS = set()
+
+
+def _run_quiet(args, timeout=10):
+    try:
+        return subprocess.run(
+            args, capture_output=True, text=True, timeout=timeout,
+            encoding="gb18030", errors="ignore", creationflags=_NO_WINDOW,
+        )
+    except Exception:
+        return None
+_ACCEL_KEYWORDS = (
+    "ruisu", "gjjt", "clash", "verge", "v2ray", "xray", "sing", "netch",
+    "tunnel", "proxy", "shadow", "ssr", "vpn",
+)
+
+
+def _netloc(url):
+    try:
+        from urllib.parse import urlparse
+
+        return urlparse(url).netloc.lower()
+    except Exception:
+        return ""
+
+
+def _is_conn_error(e):
+    msg = str(e).lower()
+    return any(
+        k in msg
+        for k in (
+            "timed out", "timeout", "refused", "10060", "10061", "unreachable",
+            "handshake", "eof", "connection", "reset", "ssl", "11004",
+            "getaddrinfo", "failed to connect",
+        )
+    )
+
+
+def _one_fetch(url, timeout=25, proxy=None):
+    """一次抓取尝试: curl_cffi(Chrome指纹) -> curl.exe -> urllib。"""
+    errs = []
     if _cffi_requests is not None:
         try:
-            return _cffi_fetch(url, timeout)
-        except Exception:
-            pass
-        if _PROXY_CFG["enabled"] and _proxy_alive():
-            try:
-                return _cffi_fetch(url, timeout, proxy_url())
-            except Exception:
-                pass
+            return _cffi_fetch(url, timeout, proxy)
+        except Exception as e:
+            errs.append(e)
     if _CURL:
         try:
-            return _curl_fetch(url, timeout)
-        except Exception:
-            pass
-        if _PROXY_CFG["enabled"] and _proxy_alive():
+            return _curl_fetch(url, timeout, proxy)
+        except Exception as e:
+            errs.append(e)
+    if proxy is None:
+        try:
+            return _urllib_fetch(url, timeout)
+        except Exception as e:
+            errs.append(e)
+    raise errs[-1] if errs else RuntimeError("fetch failed")
+
+
+def fetch_text(url, timeout=25):
+    """抓取网页。直连失败的域名会自动改为优先走本机加速器代理。"""
+    _throttle()
+    host = _netloc(url)
+    proxy_ready = bool(_PROXY_CFG.get("enabled")) and _proxy_alive()
+    if not proxy_ready:
+        if host in _PROXY_FIRST_HOSTS:
+            # 这个域名直连不通(本地被挡), 缩短超时, 别把整轮拖成几分钟
+            timeout = min(timeout, 6)
+        return _one_fetch(url, timeout, None)
+    prefer = bool(_PROXY_CFG.get("prefer")) or host in _PROXY_FIRST_HOSTS
+    order = [proxy_url(), None] if prefer else [None, proxy_url()]
+    last = None
+    for proxy in order:
+        try:
+            return _one_fetch(url, timeout, proxy)
+        except Exception as e:
+            last = e
+            if proxy is None and _is_conn_error(e):
+                _PROXY_FIRST_HOSTS.add(host)
+    raise last
+
+
+def _accelerator_ports():
+    """从本机加速器进程的监听端口里找可能的代理端口。"""
+    ports = []
+    try:
+        out = (_run_quiet(["netstat", "-ano", "-p", "tcp"], 10) or None)
+        out = out.stdout if out else ""
+    except Exception:
+        return ports
+    names = {}
+    try:
+        tl = (_run_quiet(["tasklist", "/fo", "csv", "/nh"], 10) or None)
+        tl = tl.stdout if tl else ""
+        for line in tl.splitlines():
+            parts = [x.strip().strip('"') for x in line.split('","')]
+            if len(parts) >= 2:
+                names[parts[1]] = parts[0].lower()
+    except Exception:
+        pass
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) < 5 or parts[3].upper() != "LISTENING":
+            continue
+        if not parts[1].startswith("127.0.0.1:"):
+            continue
+        try:
+            port = int(parts[1].rsplit(":", 1)[1])
+        except ValueError:
+            continue
+        pname = names.get(parts[4], "")
+        if any(k in pname for k in _ACCEL_KEYWORDS):
+            ports.append(port)
+    return ports
+
+
+def proxy_works(host="127.0.0.1", port=None, timeout=6):
+    """试探某个端口能不能当代理访问球探(直连不通的那个域名)。"""
+    try:
+        port = int(port)
+    except (TypeError, ValueError):
+        return False
+    if not port or not _CURL:
+        return False
+    args = [
+        _CURL, "-s", "-o", os.devnull, "--max-time", str(timeout),
+        "-w", "%{http_code}",
+        "-x", "http://%s:%d" % (host, port),
+        "-A", UA["User-Agent"],
+        "https://vip.titan007.com/OverDown_n.aspx?id=1&l=0",
+    ]
+    try:
+        r = _run_quiet(args, timeout + 6)
+    except Exception:
+        return False
+    code = ((r.stdout if r else "") or "").strip()
+    return code.isdigit() and int(code) > 0
+
+
+def detect_proxy_port(host="127.0.0.1", timeout=6):
+    """自动找当前加速器可用的代理端口(端口每次启动都可能变)。"""
+    cands = []
+    try:
+        cfg_port = int(_PROXY_CFG.get("port") or 0)
+    except (TypeError, ValueError):
+        cfg_port = 0
+    if cfg_port:
+        cands.append(cfg_port)
+    for p in _accelerator_ports():
+        if p not in cands:
+            cands.append(p)
+    for p in (7890, 7891, 7897, 10809, 10808, 1080, 2080, 8889, 1087):
+        if p not in cands:
+            cands.append(p)
+    for port in cands:
+        if proxy_works(host, port, timeout):
+            return port
+    return None
+
+
+def auto_proxy(save_path=None, host=None):
+    """自动识别并启用可用代理; 找不到就直连。返回识别到的端口。"""
+    host = host or _PROXY_CFG.get("host") or "127.0.0.1"
+    port = detect_proxy_port(host)
+    if port:
+        set_proxy(host, port, True, False)
+        if save_path:
             try:
-                return _curl_fetch(url, timeout, proxy_url())
+                with open(save_path, "w", encoding="utf-8") as f:
+                    json.dump(
+                        {"host": host, "port": port, "enabled": True, "prefer": False},
+                        f, ensure_ascii=False, indent=1,
+                    )
             except Exception:
                 pass
-    return _urllib_fetch(url, timeout)
+    else:
+        try:
+            keep = int(_PROXY_CFG.get("port") or 7890)
+        except (TypeError, ValueError):
+            keep = 7890
+        set_proxy(host, keep, False, False)
+    return port
 
 
 def _urllib_fetch(url, timeout=25):
