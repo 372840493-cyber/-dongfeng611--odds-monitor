@@ -82,6 +82,7 @@ class ScannerApp(tk.Tk):
         self._digest_min_gap = 60.0
         self._digest_reason = ""
         self._proxy_retry = True
+        self._round_abort = threading.Event()
         self.live_meta = {}
         self.live_info = {}
         self._rechecked = set()
@@ -149,6 +150,57 @@ class ScannerApp(tk.Tk):
         self.after(200, self._poll)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.tree.bind("<Double-1>", self._on_double_click)
+
+    def _net_check(self):
+        """一键体检: 即时比分 / 盘口直连 / 加速器代理, 结果写到日志。"""
+        self._append_log("开始网络体检…")
+
+        def work():
+            def log(msg):
+                self.events.put(("log", msg))
+
+            t0 = time.time()
+            try:
+                t.fetch_live_states(cache_secs=0)
+                log(f"① 即时比分域名: 通 ({time.time()-t0:.1f}s)")
+            except Exception as e:
+                log(f"① 即时比分域名: 不通 ({str(e)[:40]})")
+
+            vip = "https://vip.titan007.com/OverDown_n.aspx?id=1&l=0"
+            t0 = time.time()
+            direct_ok = False
+            try:
+                t._one_fetch(vip, 6, None)
+                direct_ok = True
+            except Exception:
+                direct_ok = False
+            log(
+                f"② 盘口域名直连: {'通' if direct_ok else '不通'} "
+                f"({time.time()-t0:.1f}s) ＜- 不通就需要加速器"
+            )
+
+            t0 = time.time()
+            try:
+                port = t.detect_proxy_port()
+            except Exception:
+                port = None
+            if not port:
+                log("③ 加速器代理: 没找到可用端口（加速器没开/没连上节点）")
+            else:
+                try:
+                    t._one_fetch(vip, 8, f"http://127.0.0.1:{port}")
+                    log(f"③ 加速器代理: 端口 {port} 可以拉盘口 ✅ ({time.time()-t0:.1f}s)")
+                except Exception as e:
+                    log(
+                        f"③ 加速器代理: 端口 {port} 存在但拉不到盘口 "
+                        f"({str(e)[:40]}) ＜- 换个节点/线路"
+                    )
+            if direct_ok or port:
+                log("体检结论: 通道可用，可以开始扫描")
+            else:
+                log("体检结论: 通道不通 → 先把加速器连上能访问外网的节点")
+
+        threading.Thread(target=work, daemon=True).start()
 
     def _set_app_icon(self):
         """窗口/任务栏图标(app.ico 放在程序旁边)。"""
@@ -234,6 +286,9 @@ class ScannerApp(tk.Tk):
             variable=self.only_tend_var,
             command=self._toggle_only_tend,
         ).pack(side="left", padx=4)
+        ttk.Button(cfg, text="网络体检", command=self._net_check).pack(
+            side="left", padx=6
+        )
         ttk.Button(cfg2, text="汇总发送", command=self._send_digest_now).pack(
             side="left", padx=4
         )
@@ -358,6 +413,7 @@ class ScannerApp(tk.Tk):
         self.events.put(("log", f"启动: 阈值≥{self.thr} 公司ID={self.cid} 间隔{self.interval}s"))
         while self.running:
             t0 = time.time()
+            self._round_abort.clear()
             if self._proxy_retry:
                 self._proxy_retry = False
                 try:
@@ -414,6 +470,19 @@ class ScannerApp(tk.Tk):
                     )
                 if r.get("error"):
                     counters["err"] += 1
+                    if (
+                        counters["ok"] == 0
+                        and counters["err"] >= 5
+                        and not self._round_abort.is_set()
+                    ):
+                        self._round_abort.set()
+                        self.events.put(
+                            (
+                                "log",
+                                "盘口通道不通(加速器没连上/被墙)，本轮提前结束，"
+                                "修好加速器后会自动恢复",
+                            )
+                        )
                     return
                 counters["ok"] += 1
                 d = r.get("diff")
@@ -455,7 +524,9 @@ class ScannerApp(tk.Tk):
                 workers=self.workers,
                 timeout=18,
                 on_result=on_result,
-                stop_check=self.stop_ev.is_set,
+                stop_check=lambda: (
+                    self.stop_ev.is_set() or self._round_abort.is_set()
+                ),
             )
             if not self.running:
                 self.events.put(("stopped", None))

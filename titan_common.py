@@ -185,6 +185,31 @@ def _curl_fetch(url, timeout=25, proxy=None):
 
 
 _PROXY_FIRST_HOSTS = set()
+_HOST_FAILS = {}
+_DEAD_HOSTS = {}
+_DEAD_COOLDOWN = 90.0
+
+
+def _is_dead(host):
+    ts = _DEAD_HOSTS.get(host)
+    return bool(ts and time.time() < ts)
+
+
+def _mark_host_fail(host):
+    if not host:
+        return
+    n = _HOST_FAILS.get(host, 0) + 1
+    _HOST_FAILS[host] = n
+    if n >= 3:
+        _DEAD_HOSTS[host] = time.time() + _DEAD_COOLDOWN
+
+
+def _clear_host_fail(host):
+    if host:
+        _HOST_FAILS.pop(host, None)
+        _DEAD_HOSTS.pop(host, None)
+
+
 
 
 def _run_quiet(args, timeout=10):
@@ -223,18 +248,26 @@ def _is_conn_error(e):
 
 
 def _one_fetch(url, timeout=25, proxy=None):
-    """一次抓取尝试: curl_cffi(Chrome指纹) -> curl.exe -> urllib。"""
+    """一次抓取尝试: curl_cffi(Chrome指纹) -> curl.exe -> urllib。
+
+    连不上(超时/被拒/握手失败)时直接放弃, 不再换工具重试同一条路,
+    否则一次失败要等 3 倍超时, 整轮会拖到几十分钟。
+    """
     errs = []
     if _cffi_requests is not None:
         try:
             return _cffi_fetch(url, timeout, proxy)
         except Exception as e:
             errs.append(e)
+            if _is_conn_error(e):
+                raise
     if _CURL:
         try:
             return _curl_fetch(url, timeout, proxy)
         except Exception as e:
             errs.append(e)
+            if _is_conn_error(e):
+                raise
     if proxy is None:
         try:
             return _urllib_fetch(url, timeout)
@@ -247,22 +280,38 @@ def fetch_text(url, timeout=25):
     """抓取网页。直连失败的域名会自动改为优先走本机加速器代理。"""
     _throttle()
     host = _netloc(url)
+    if _is_dead(host):
+        raise RuntimeError(
+            "通道暂时不通(%s): 直连被挡且加速器未连上" % host
+        )
     proxy_ready = bool(_PROXY_CFG.get("enabled")) and _proxy_alive()
     if not proxy_ready:
         if host in _PROXY_FIRST_HOSTS:
             # 这个域名直连不通(本地被挡), 缩短超时, 别把整轮拖成几分钟
-            timeout = min(timeout, 6)
-        return _one_fetch(url, timeout, None)
+            timeout = min(timeout, 3)
+        try:
+            out = _one_fetch(url, timeout, None)
+            _clear_host_fail(host)
+            return out
+        except Exception as e:
+            if _is_conn_error(e):
+                _PROXY_FIRST_HOSTS.add(host)
+                _mark_host_fail(host)
+            raise
     prefer = bool(_PROXY_CFG.get("prefer")) or host in _PROXY_FIRST_HOSTS
     order = [proxy_url(), None] if prefer else [None, proxy_url()]
     last = None
     for proxy in order:
         try:
-            return _one_fetch(url, timeout, proxy)
+            out = _one_fetch(url, timeout, proxy)
+            _clear_host_fail(host)
+            return out
         except Exception as e:
             last = e
             if proxy is None and _is_conn_error(e):
                 _PROXY_FIRST_HOSTS.add(host)
+    if _is_conn_error(last):
+        _mark_host_fail(host)
     raise last
 
 
@@ -371,7 +420,7 @@ def auto_proxy(save_path=None, host=None):
 def _urllib_fetch(url, timeout=25):
     req = urllib.request.Request(url, headers=UA)
     last_err = None
-    proxies = urllib.request.getproxies()
+    proxies = {}  # 不用系统代理, 只用软件自己的代理设置
     custom = []
     if _PROXY_CFG["enabled"] and _proxy_alive():
         custom = [("custom", min(timeout, 10))]
