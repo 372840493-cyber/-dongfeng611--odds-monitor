@@ -159,12 +159,25 @@ class ScannerApp(tk.Tk):
             def log(msg):
                 self.events.put(("log", msg))
 
+            import socket as _socket
+
             t0 = time.time()
             try:
                 t.fetch_live_states(cache_secs=0)
                 log(f"① 即时比分域名: 通 ({time.time()-t0:.1f}s)")
             except Exception as e:
                 log(f"① 即时比分域名: 不通 ({str(e)[:40]})")
+
+            for host in ("www.titan007.com", "vip.titan007.com"):
+                t0 = time.time()
+                try:
+                    ip = _socket.gethostbyname(host)
+                    log(f"①-DNS {host} → {ip} ({time.time()-t0:.1f}s)")
+                except Exception:
+                    log(
+                        f"①-DNS {host} → 解析失败 ({time.time()-t0:.1f}s) "
+                        "＜- DNS 被加速器弄坏了"
+                    )
 
             vip = "https://vip.titan007.com/OverDown_n.aspx?id=1&l=0"
             t0 = time.time()
@@ -430,7 +443,10 @@ class ScannerApp(tk.Tk):
             try:
                 matches = t.fetch_home_matches()
             except Exception as e:
-                self.events.put(("log", f"比赛列表获取失败: {e}"))
+                msg = str(e)
+                if t._is_dns_error(e):
+                    msg += " ＜- 域名解析失败: 加速器把 DNS 接管了, 先关掉它的全局/TUN 模式"
+                self.events.put(("log", f"比赛列表获取失败: {msg}"))
                 self._sleep(10)
                 continue
             if not matches:
