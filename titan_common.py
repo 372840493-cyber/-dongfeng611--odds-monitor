@@ -187,7 +187,7 @@ def _curl_fetch(url, timeout=25, proxy=None):
 _PROXY_FIRST_HOSTS = set()
 _HOST_FAILS = {}
 _DEAD_HOSTS = {}
-_DEAD_COOLDOWN = 90.0
+_DEAD_COOLDOWN = 30.0
 
 
 def _is_dead(host):
@@ -233,6 +233,17 @@ def _netloc(url):
         return urlparse(url).netloc.lower()
     except Exception:
         return ""
+
+
+def _is_dns_error(e):
+    msg = str(e).lower()
+    return any(k in msg for k in ("getaddrinfo", "11004", "name or service", "nodename"))
+
+
+def clear_dead_hosts():
+    """清掉"通道不通"的短期标记(用户重新扫描/换代理后调用)。"""
+    _DEAD_HOSTS.clear()
+    _HOST_FAILS.clear()
 
 
 def _is_conn_error(e):
@@ -396,6 +407,7 @@ def detect_proxy_port(host="127.0.0.1", timeout=6):
 def auto_proxy(save_path=None, host=None):
     """自动识别并启用可用代理; 找不到就直连。返回识别到的端口。"""
     host = host or _PROXY_CFG.get("host") or "127.0.0.1"
+    clear_dead_hosts()
     port = detect_proxy_port(host)
     if port:
         set_proxy(host, port, True, False)
