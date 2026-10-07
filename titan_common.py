@@ -179,6 +179,18 @@ def _curl_fetch(url, timeout=25, proxy=None):
 
 
 _PROXY_FIRST_HOSTS = set()
+# Windows: 后台跑 netstat/tasklist/curl 时不要弹黑窗口
+_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
+
+
+def _run_quiet(args, timeout=10):
+    try:
+        return subprocess.run(
+            args, capture_output=True, text=True, timeout=timeout,
+            encoding="gb18030", errors="ignore", creationflags=_NO_WINDOW,
+        )
+    except Exception:
+        return None
 _ACCEL_KEYWORDS = (
     "ruisu", "gjjt", "clash", "verge", "v2ray", "xray", "sing", "netch",
     "tunnel", "proxy", "shadow", "ssr", "vpn",
@@ -254,20 +266,14 @@ def _accelerator_ports():
     """从本机加速器进程的监听端口里找可能的代理端口。"""
     ports = []
     try:
-        out = subprocess.run(
-            ["netstat", "-ano", "-p", "tcp"],
-            capture_output=True, text=True, timeout=10,
-            encoding="gb18030", errors="ignore",
-        ).stdout
+        out = (_run_quiet(["netstat", "-ano", "-p", "tcp"], 10) or None)
+        out = out.stdout if out else ""
     except Exception:
         return ports
     names = {}
     try:
-        tl = subprocess.run(
-            ["tasklist", "/fo", "csv", "/nh"],
-            capture_output=True, text=True, timeout=10,
-            encoding="gb18030", errors="ignore",
-        ).stdout
+        tl = (_run_quiet(["tasklist", "/fo", "csv", "/nh"], 10) or None)
+        tl = tl.stdout if tl else ""
         for line in tl.splitlines():
             parts = [x.strip().strip('"') for x in line.split('","')]
             if len(parts) >= 2:
@@ -306,10 +312,10 @@ def proxy_works(host="127.0.0.1", port=None, timeout=6):
         "https://vip.titan007.com/OverDown_n.aspx?id=1&l=0",
     ]
     try:
-        r = subprocess.run(args, capture_output=True, text=True, timeout=timeout + 6)
+        r = _run_quiet(args, timeout + 6)
     except Exception:
         return False
-    code = (r.stdout or "").strip()
+    code = ((r.stdout if r else "") or "").strip()
     return code.isdigit() and int(code) > 0
 
 
