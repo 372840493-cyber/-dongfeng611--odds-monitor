@@ -11,6 +11,9 @@ import threading
 import time
 import urllib.request
 
+# Windows: 后台跑 netstat/tasklist/curl 时不要弹黑窗口
+_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
+
 UA = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -163,7 +166,10 @@ def _curl_fetch(url, timeout=25, proxy=None):
     if proxy:
         args += ["-x", proxy]
     args.append(url)
-    r = subprocess.run(args, capture_output=True, timeout=int(timeout) + 5)
+    r = subprocess.run(
+        args, capture_output=True, timeout=int(timeout) + 5,
+        creationflags=_NO_WINDOW,
+    )
     if r.returncode != 0:
         raise RuntimeError(f"curl exit {r.returncode}: {r.stderr[:120]!r}")
     out = r.stdout
@@ -179,8 +185,6 @@ def _curl_fetch(url, timeout=25, proxy=None):
 
 
 _PROXY_FIRST_HOSTS = set()
-# Windows: 后台跑 netstat/tasklist/curl 时不要弹黑窗口
-_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 
 
 def _run_quiet(args, timeout=10):
