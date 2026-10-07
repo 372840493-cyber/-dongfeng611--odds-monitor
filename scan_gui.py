@@ -81,6 +81,7 @@ class ScannerApp(tk.Tk):
         self._last_digest_ts = 0.0
         self._digest_min_gap = 60.0
         self._digest_reason = ""
+        self._proxy_retry = True
         self.live_meta = {}
         self.live_info = {}
         self._rechecked = set()
@@ -357,6 +358,19 @@ class ScannerApp(tk.Tk):
         self.events.put(("log", f"启动: 阈值≥{self.thr} 公司ID={self.cid} 间隔{self.interval}s"))
         while self.running:
             t0 = time.time()
+            if self._proxy_retry:
+                self._proxy_retry = False
+                try:
+                    port = t.auto_proxy(save_path=self._proxy_cfg_path())
+                except Exception as e:
+                    port = None
+                    self.events.put(("log", f"代理自动识别出错: {e}"))
+                self.events.put(
+                    (
+                        "log",
+                        f"代理自动识别: {'端口 ' + str(port) if port else '未找到可用代理，走直连'}",
+                    )
+                )
             try:
                 matches = t.fetch_home_matches()
             except Exception as e:
@@ -459,6 +473,9 @@ class ScannerApp(tk.Tk):
                     time.time() - t0,
                 )
             )
+            if counters["ok"] == 0 and counters["err"] >= 5:
+                # 整轮全失败: 下一轮开头重新识别代理端口
+                self._proxy_retry = True
             cost = time.time() - t0
             self._sleep(max(5, self.interval - cost))
         self.events.put(("stopped", None))
