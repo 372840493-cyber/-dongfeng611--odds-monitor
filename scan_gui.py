@@ -733,7 +733,7 @@ class ScannerApp(tk.Tk):
                     if self._last_live.get(sid) != (score, ""):
                         self._last_live[sid] = (score, "")
                         self.events.put(("live", sid, score, ""))
-            # 已锁定的场次: 开赛前15分钟发临场提醒(原始倾向+当前盘口)
+            # 已锁定的场次: 开赛前20分钟发临场提醒(原始倾向+当前盘口+大小球建议)
             for sid, info in list(self.live_info.items()):
                 snap = info.get("snapshot")
                 if not snap or sid in self._prematch_notified:
@@ -745,8 +745,13 @@ class ScannerApp(tk.Tk):
                     ko_dt = datetime.strptime(ko, "%Y-%m-%d %H:%M")
                 except (TypeError, ValueError):
                     continue
-                if not (ko_dt - timedelta(minutes=15) <= now2 < ko_dt):
+                if not (
+                    ko_dt - timedelta(minutes=PREMATCH_MIN)
+                    <= now2
+                    < ko_dt + timedelta(minutes=5)
+                ):
                     continue
+                late = now2 >= ko_dt
                 self._prematch_notified.add(sid)
                 try:
                     m = {
@@ -853,11 +858,13 @@ class ScannerApp(tk.Tk):
                         f"主队: {info.get('home', '')}\n"
                         f"客队: {info.get('away', '')}\n"
                         f"原始倾向: {snap}\n"
-                        f"开赛前15分钟复查: {check_txt}{extra}\n"
+                        f"开赛前{PREMATCH_MIN}分钟复查"
+                        f"{'（补发：检查时已开赛）' if late else ''}: "
+                        f"{check_txt}{extra}\n"
                         f"{ou_txt}"
                     )
                     subject = (
-                        f"临场提醒(15分钟): {info.get('league', '')} "
+                        f"临场提醒({PREMATCH_MIN}分钟): {info.get('league', '')} "
                         f"{info.get('home', '')} vs {info.get('away', '')}"
                     )
                     cfg = self.mail_cfg
@@ -872,7 +879,7 @@ class ScannerApp(tk.Tk):
                     self.events.put(("log", f"临场提醒已发送: {subject}"))
                 else:
                     self.events.put(("log", f"临场提醒取数失败: {sid}"))
-            # 开赛前 15 分钟最后复查一次倾向
+            # 开赛前 20 分钟最后复查一次倾向
             now2 = datetime.now()
             for sid, info in list(self.live_info.items()):
                 if sid in self._rechecked:
@@ -884,7 +891,10 @@ class ScannerApp(tk.Tk):
                     ko_dt = datetime.strptime(ko, "%Y-%m-%d %H:%M")
                 except (TypeError, ValueError):
                     continue
-                if now2 < ko_dt - timedelta(minutes=15) or now2 >= ko_dt:
+                if (
+                    now2 < ko_dt - timedelta(minutes=PREMATCH_MIN)
+                    or now2 >= ko_dt + timedelta(minutes=5)
+                ):
                     continue
                 self._rechecked.add(sid)
                 try:
@@ -908,7 +918,7 @@ class ScannerApp(tk.Tk):
                             _advtxt = self._ou_advice_text(r)
                             if _adv and _adv.get("buy_small") and _advtxt:
                                 _subj = (
-                                    f"大小球建议(15分钟): {info.get('league', '')} "
+                                    f"大小球建议({PREMATCH_MIN}分钟): {info.get('league', '')} "
                                     f"{info.get('home', '')} vs {info.get('away', '')}"
                                 )
                                 _body = (
