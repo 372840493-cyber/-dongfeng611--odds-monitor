@@ -299,7 +299,7 @@ def fetch_text(url, timeout=25):
     if not proxy_ready:
         if host in _PROXY_FIRST_HOSTS:
             # 这个域名直连不通(本地被挡), 缩短超时, 别把整轮拖成几分钟
-            timeout = min(timeout, 3)
+            timeout = min(timeout, 8)
         try:
             out = _one_fetch(url, timeout, None)
             _clear_host_fail(host)
