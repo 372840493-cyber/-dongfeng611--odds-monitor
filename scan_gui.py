@@ -944,7 +944,20 @@ class ScannerApp(tk.Tk):
                             args=(cfg, subject, body),
                             daemon=True,
                         ).start()
-                    self.events.put(("log", f"临场提醒已发送: {subject}"))
+                    _lines = [
+                        f"🔔 临场提醒({PREMATCH_MIN}分钟) 已发邮件: "
+                        f"{info.get('league', '')} {info.get('home', '')} vs "
+                        f"{info.get('away', '')}  开赛 {ko}",
+                        f"    原始倾向: {snap}",
+                        f"    复查结果: {check_txt}",
+                    ]
+                    for _ln in (extra or "").strip().splitlines():
+                        if _ln.strip():
+                            _lines.append("    " + _ln.strip())
+                    for _ln in (ou_txt or "").strip().splitlines():
+                        if _ln.strip():
+                            _lines.append("    " + _ln.strip())
+                    self.events.put(("log", "\n".join(_lines)))
                 else:
                     self.events.put(("log", f"临场提醒取数失败: {sid}"))
             # 开赛前 20 分钟最后复查一次倾向
@@ -1005,9 +1018,16 @@ class ScannerApp(tk.Tk):
                                         args=(_cfg, _subj, _body),
                                         daemon=True,
                                     ).start()
-                                self.events.put(
-                                    ("log", f"大小球建议已发送: {_subj}")
-                                )
+                                _ol = [
+                                    f"🔔 大小球建议({PREMATCH_MIN}分钟) 已发邮件: "
+                                    f"{info.get('league', '')} "
+                                    f"{info.get('home', '')} vs {info.get('away', '')}  "
+                                    f"开赛 {ko}",
+                                ]
+                                for _ln in (_advtxt or "").strip().splitlines():
+                                    if _ln.strip():
+                                        _ol.append("    " + _ln.strip())
+                                self.events.put(("log", "\n".join(_ol)))
                 except Exception:
                     pass
             end = time.time() + 30
