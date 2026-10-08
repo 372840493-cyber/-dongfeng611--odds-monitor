@@ -38,6 +38,10 @@ def now():
     return datetime.now().strftime("%H:%M:%S")
 
 
+# 临场提醒提前量(分钟)
+PREMATCH_MIN = 15
+
+
 class ScannerApp(tk.Tk):
     COLS = [
         ("league", "联赛", 64),
@@ -526,7 +530,9 @@ class ScannerApp(tk.Tk):
         self.status.config(text="运行中")
         self.worker = threading.Thread(target=self._run, daemon=True)
         self.worker.start()
-        self.score_thread = threading.Thread(target=self._score_loop, daemon=True)
+        self.score_thread = threading.Thread(
+            target=self._score_loop_guard, daemon=True
+        )
         self.score_thread.start()
         self.daily_thread = threading.Thread(target=self._daily_mail_loop, daemon=True)
         self.daily_thread.start()
@@ -681,6 +687,20 @@ class ScannerApp(tk.Tk):
             cost = time.time() - t0
             self._sleep(max(5, self.interval - cost))
         self.events.put(("stopped", None))
+
+    def _score_loop_guard(self):
+        """比分线程外壳: 出错也只记录并自动重启, 不会静默死掉。"""
+        while self.running and not self.stop_ev.is_set():
+            try:
+                self._score_loop()
+            except Exception as e:
+                self.events.put(
+                    (
+                        "log",
+                        f"比分线程异常: {type(e).__name__}: {e}（5秒后自动重试）",
+                    )
+                )
+                time.sleep(5)
 
     def _score_loop(self):
         from datetime import datetime, timedelta
