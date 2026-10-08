@@ -164,35 +164,67 @@ class ScannerApp(tk.Tk):
         return n, small
 
     def _ou_advice(self, r):
-        """按平博大小球盘口动作给建议: 升盘 + 升水 -> 买小球。"""
+        """按平博大小球盘口动作给建议。
+
+        升盘 + 大升水(>=0.05) -> 买小球
+        降盘 + 大降水(>=0.05) -> 买大球
+        """
         o_line, o_big = r.get("open_line"), r.get("open_big")
         c_line, c_big = r.get("cur_line"), r.get("cur_big")
         if o_line is None or o_big is None or c_line is None or c_big is None:
             return None
-        up = c_line > o_line + 1e-9
-        down = c_line < o_line - 1e-9
-        w_up = c_big > o_big + 0.02
-        w_down = c_big < o_big - 0.02
-        if up and w_up:
-            act = f"升盘 + 升水（大球水位 {o_big:.2f}→{c_big:.2f}）"
-        elif up and w_down:
-            act = f"升盘 + 降水（大球水位 {o_big:.2f}→{c_big:.2f}）"
+        ld = c_line - o_line
+        wd = c_big - o_big
+        up = ld > 1e-9
+        down = ld < -1e-9
+        big_up = wd >= 0.05          # 大升水
+        big_down = wd <= -0.05       # 大降水
+        if up and big_down:
+            act = f"升盘 + 大降水（大球水位 {o_big:.2f}→{c_big:.2f}）"
+        elif up and big_up:
+            act = f"升盘 + 大升水（大球水位 {o_big:.2f}→{c_big:.2f}）"
         elif up:
-            act = f"升盘（大球水位 {o_big:.2f}→{c_big:.2f} 基本不变）"
-        elif down and w_down:
-            act = f"降盘 + 降水（大球水位 {o_big:.2f}→{c_big:.2f}）"
-        elif down and w_up:
-            act = f"降盘 + 升水（大球水位 {o_big:.2f}→{c_big:.2f}）"
+            act = f"升盘 + {'小降水' if wd < 0 else ('小升水' if wd > 0 else '水位持平')}（{o_big:.2f}→{c_big:.2f}）"
+        elif down and big_down:
+            act = f"降盘 + 大降水（大球水位 {o_big:.2f}→{c_big:.2f}）"
+        elif down and big_up:
+            act = f"降盘 + 大升水（大球水位 {o_big:.2f}→{c_big:.2f}）"
         elif down:
-            act = f"降盘（大球水位 {o_big:.2f}→{c_big:.2f}）"
+            act = f"降盘 + {'小降水' if wd < 0 else ('小升水' if wd > 0 else '水位持平')}（{o_big:.2f}→{c_big:.2f}）"
         else:
             act = f"平盘（大球水位 {o_big:.2f}→{c_big:.2f}）"
         return {
             "act": act,
-            "buy_small": bool(up and w_up),
+            "buy_small": bool(up and big_up),
+            "buy_big": bool(down and big_down),
             "open_txt": sc.fmt_odds(o_line, o_big, r.get("open_small")),
             "cur_txt": sc.fmt_odds(c_line, c_big, r.get("cur_small")),
             "line_txt": sc.fmt_line(c_line) if c_line is not None else "-",
+        }
+
+    def _pattern_stats(self, kw):
+        """按软件'对比统计'同样口径统计某类动作: 返回 dict。"""
+        n = pin_big = pin_small = push = ge3 = 0
+        for rec in self.ou_stats:
+            sig = (rec.get("sig_t15") or rec.get("sig_lock") or "")
+            if kw not in sig:
+                continue
+            n += 1
+            rp = rec.get("result_vs_pin")
+            if rp == "大":
+                pin_big += 1
+            elif rp == "小":
+                pin_small += 1
+            else:
+                push += 1
+            if rec.get("big25") == "大":
+                ge3 += 1
+        return {
+            "n": n,
+            "pin_big": pin_big,
+            "pin_small": pin_small,
+            "push": push,
+            "ge3": ge3,
         }
 
     def _ou_advice_text(self, r):
@@ -200,21 +232,37 @@ class ScannerApp(tk.Tk):
         adv = self._ou_advice(r)
         if not adv:
             return ""
-        n, small = self._upwater_stats()
-        pct = f"{small / n * 100:.0f}%" if n else "-"
+        st_small = self._pattern_stats("升盘阻大")
+        st_big = self._pattern_stats("诱大")
         txt = (
             f"\n大小球(平博): 初盘 {adv['open_txt']} → 即时 {adv['cur_txt']}\n"
             f"大小球动作: {adv['act']}\n"
         )
         if adv["buy_small"]:
+            s = st_small
+            dec = (s["pin_big"] + s["pin_small"]) or 1
             txt += (
                 f"大小球建议: 【买小球 {adv['line_txt']}】"
-                f"（历史升盘+升水 {n} 场, 走小 {small} 场 {pct}）\n"
+                f"（历史升盘+升水 {s['n']} 场: 走小 {s['pin_small']} 场 "
+                f"{s['pin_small']/dec*100:.0f}%, ≥3球 {s['ge3']/s['n']*100:.0f}%）\n"
+                if s["n"] else
+                f"大小球建议: 【买小球 {adv['line_txt']}】（历史样本不足）\n"
+            )
+        elif adv["buy_big"]:
+            b = st_big
+            dec = (b["pin_big"] + b["pin_small"]) or 1
+            txt += (
+                f"大小球建议: 【买大球 {adv['line_txt']}】"
+                f"（历史降盘+大降水 {b['n']} 场: 对盘口走大 {b['pin_big']} 场 "
+                f"{b['pin_big']/dec*100:.0f}%, ≥3球 {b['ge3']/b['n']*100:.0f}%）\n"
+                if b["n"] else
+                f"大小球建议: 【买大球 {adv['line_txt']}】（历史样本不足）\n"
             )
         else:
             txt += (
-                "大小球建议: 不买（当前不是「升盘+升水」；"
-                f"参考: 升盘+升水 {n} 场走小率 {pct}）\n"
+                "大小球建议: 不买（当前不是「升盘+升水」也不是「降盘+大降水」；"
+                f"参考: 升盘+升水 {st_small['n']} 场走小 {st_small['pin_small']} 场, "
+                f"降盘+大降水 {st_big['n']} 场走大 {st_big['pin_big']} 场）\n"
             )
         return txt
 
@@ -916,7 +964,7 @@ class ScannerApp(tk.Tk):
                         if not info.get("snapshot"):
                             _adv = self._ou_advice(r)
                             _advtxt = self._ou_advice_text(r)
-                            if _adv and _adv.get("buy_small") and _advtxt:
+                            if _adv and (_adv.get("buy_small") or _adv.get("buy_big")) and _advtxt:
                                 _subj = (
                                     f"大小球建议({PREMATCH_MIN}分钟): {info.get('league', '')} "
                                     f"{info.get('home', '')} vs {info.get('away', '')}"
@@ -1283,9 +1331,12 @@ class ScannerApp(tk.Tk):
             if not any_row:
                 lines.append("  暂无样本")
             lines.append("")
+        lines.append(
+            "【专项】口径: 对盘口=按平博当时盘口线; ≥3球=固定 2.5 球线"
+        )
         for label_txt, kw in (
-            ("升盘+大升水(升盘阻大)", "升盘阻大"),
-            ("降盘+大降水(可能诱大)", "诱大"),
+            ("升盘+大升水(看小)", "升盘阻大"),
+            ("降盘+大降水(诱大)", "诱大"),
         ):
             n = big = small = w = l = p = 0
             for rec in self.ou_stats:
@@ -1304,10 +1355,13 @@ class ScannerApp(tk.Tk):
                     l += 1
                 else:
                     p += 1
-            pct = (100.0 * big / n) if n else 0
+            pct3 = (100.0 * big / n) if n else 0
+            dec = (w + l) or 1
+            wp = 100.0 * w / dec
+            lp = 100.0 * l / dec
             lines.append(
-                f"【专项】{label_txt}: {n} 场 | 总进球≥3 {big} / ≤2 {small} | "
-                f"大球占比 {pct:.0f}% | 对主盘 大{w}/小{l}/走{p}"
+                f"  {label_txt}: {n} 场 | 对盘口 大{w}({wp:.0f}%) 小{l}({lp:.0f}%) 走{p} | "
+                f"≥3球 {big}({pct3:.0f}%)"
             )
         lines.append("")
         lines.append("最近 20 场明细:")
