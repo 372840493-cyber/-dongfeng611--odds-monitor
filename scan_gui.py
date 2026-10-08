@@ -97,6 +97,7 @@ class ScannerApp(tk.Tk):
         self.events = queue.Queue()
         self.alerted = set()
         self.skip = set()
+        self._skip_until = {}
         self.last_rows = []
         self.all_rows = []
         self.live_sids = set()
@@ -123,6 +124,7 @@ class ScannerApp(tk.Tk):
         self.notes = {}
         self._edit_active = False
         self._load_notes()
+        self._load_skip()
         self._build()
         self._load_history()
         self.ou_stats = self._load_ou_stats()
@@ -154,6 +156,19 @@ class ScannerApp(tk.Tk):
         self.after(200, self._poll)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.tree.bind("<Double-1>", self._on_double_click)
+
+    def _recent_enough(self, r, hours=3.5):
+        """刚被扫描到的场次是否还值得跟踪(开赛超过 hours 小时视为已完场)。"""
+        from datetime import datetime as _dt, timedelta as _td
+
+        ko = (r.get("kickoff") or "").strip()
+        if not ko:
+            return True
+        try:
+            ko_dt = _dt.strptime(ko, "%Y-%m-%d %H:%M")
+        except (TypeError, ValueError):
+            return True
+        return _dt.now() < ko_dt + _td(hours=hours)
 
     def _upwater_stats(self):
         """累计样本里"升盘+升水"的命中情况, 返回 (场数, 小球数)。"""
@@ -1155,6 +1170,7 @@ class ScannerApp(tk.Tk):
         self.tend_sounded.discard(sid)
         self._rechecked.discard(sid)
         self._score_verified.discard(sid)
+        self._mark_skip([sid])      # 删掉就不再扫描/不再弹倾向(保留24小时)
         self._render(self.all_rows, set())
         self._save_history()
         name = (
@@ -1162,7 +1178,7 @@ class ScannerApp(tk.Tk):
             if row
             else sid
         )
-        self._append_log(f"已删除场次: {name}")
+        self._append_log(f"已删除场次: {name}（以后不再扫描这场）")
 
     def _backup_history(self):
         src = self._history_path()
@@ -1194,6 +1210,7 @@ class ScannerApp(tk.Tk):
         ):
             return
         self._backup_history()
+        self._mark_skip([str(r.get("sid")) for r in self.all_rows])
         self.all_rows = []
         self.live_sids.clear()
         self.live_meta.clear()
@@ -1204,7 +1221,7 @@ class ScannerApp(tk.Tk):
         self._prematch_notified.clear()
         self._render([], set())
         self._save_history()
-        self._append_log("已全选删除: 全部记录已清空")
+        self._append_log("已全选删除: 全部记录已清空（这些场次本轮不再扫描）")
 
     def _clear_finished(self):
         self._backup_history()
@@ -1964,6 +1981,8 @@ class ScannerApp(tk.Tk):
                     self._append_log(ev[1])
                 elif kind == "row":
                     r, is_new = ev[1], ev[2]
+                    if is_new and not self._recent_enough(r):
+                        continue
                     old_row = next(
                         (
                             x
@@ -2191,6 +2210,44 @@ class ScannerApp(tk.Tk):
         self.logtxt.insert("end", msg + "\n")
         self.logtxt.see("end")
         self.logtxt.config(state="disabled")
+
+    def _skip_path(self):
+        return os.path.join(app_dir(), "skip_ids.json")
+
+    def _load_skip(self):
+        """读取"已删除/不再扫描"的场次(默认保留 24 小时)。"""
+        p = self._skip_path()
+        if not os.path.exists(p):
+            return
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                data = json.load(f) or {}
+        except Exception:
+            return
+        now = time.time()
+        for sid, ts in data.items():
+            try:
+                ts = float(ts)
+            except (TypeError, ValueError):
+                continue
+            if ts > now:
+                self.skip.add(str(sid))
+                self._skip_until[str(sid)] = ts
+
+    def _save_skip(self):
+        try:
+            with open(self._skip_path(), "w", encoding="utf-8") as f:
+                json.dump(self._skip_until, f, ensure_ascii=False)
+        except Exception:
+            pass
+
+    def _mark_skip(self, sids, hours=24):
+        until = time.time() + hours * 3600
+        for sid in sids:
+            sid = str(sid)
+            self.skip.add(sid)
+            self._skip_until[sid] = until
+        self._save_skip()
 
     def _notes_path(self):
         return os.path.join(app_dir(), "notes.json")
