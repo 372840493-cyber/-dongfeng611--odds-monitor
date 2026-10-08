@@ -930,6 +930,7 @@ class ScannerApp(tk.Tk):
                         f"{'（补发：检查时已开赛）' if late else ''}: "
                         f"{check_txt}{extra}\n"
                         f"{ou_txt}"
+                        f"（禁止赌博行为，只提供数据参考！）\n"
                     )
                     subject = (
                         f"临场提醒({PREMATCH_MIN}分钟): {info.get('league', '')} "
@@ -957,6 +958,7 @@ class ScannerApp(tk.Tk):
                     for _ln in (ou_txt or "").strip().splitlines():
                         if _ln.strip():
                             _lines.append("    " + _ln.strip())
+                    _lines.append("    （禁止赌博行为，只提供数据参考！）")
                     self.events.put(("log", "\n".join(_lines)))
                 else:
                     self.events.put(("log", f"临场提醒取数失败: {sid}"))
@@ -1008,6 +1010,7 @@ class ScannerApp(tk.Tk):
                                     f"主队: {info.get('home', '')}\n"
                                     f"客队: {info.get('away', '')}\n"
                                     f"{_advtxt}"
+                                    f"（禁止赌博行为，只提供数据参考！）\n"
                                 )
                                 _cfg = self.mail_cfg
                                 if _cfg.get("enabled") and all(
@@ -1027,6 +1030,7 @@ class ScannerApp(tk.Tk):
                                 for _ln in (_advtxt or "").strip().splitlines():
                                     if _ln.strip():
                                         _ol.append("    " + _ln.strip())
+                                _ol.append("    （禁止赌博行为，只提供数据参考！）")
                                 self.events.put(("log", "\n".join(_ol)))
                 except Exception:
                     pass
