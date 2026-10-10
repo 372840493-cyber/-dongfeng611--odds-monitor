@@ -460,7 +460,8 @@ def auto_proxy(save_path=None, host=None):
     except (TypeError, ValueError):
         cfg_port = 0
     if (
-        cfg_host
+        _PROXY_CFG.get("enabled")
+        and cfg_host
         and cfg_host not in ("127.0.0.1", "localhost")
         and cfg_port
     ):
