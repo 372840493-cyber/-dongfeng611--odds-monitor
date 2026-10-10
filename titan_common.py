@@ -10,6 +10,7 @@ import subprocess
 import threading
 import time
 import urllib.request
+from urllib.parse import quote
 
 # Windows: 后台跑 netstat/tasklist/curl 时不要弹黑窗口
 _NO_WINDOW = 0x08000000 if os.name == "nt" else 0
@@ -85,10 +86,17 @@ _REQ_LOCK = threading.Lock()
 _LAST_REQ = {"t": 0.0}
 _MIN_GAP = 0.25
 
-_PROXY_CFG = {"host": "127.0.0.1", "port": 7890, "enabled": True, "prefer": False}
+_PROXY_CFG = {
+    "host": "127.0.0.1",
+    "port": 7890,
+    "enabled": True,
+    "prefer": False,
+    "user": "",
+    "pass": "",
+}
 
 
-def set_proxy(host=None, port=None, enabled=True, prefer=False):
+def set_proxy(host=None, port=None, enabled=True, prefer=False, user=None, password=None):
     if host:
         _PROXY_CFG["host"] = str(host).strip()
     try:
@@ -96,12 +104,31 @@ def set_proxy(host=None, port=None, enabled=True, prefer=False):
             _PROXY_CFG["port"] = int(port)
     except (TypeError, ValueError):
         pass
+    # 代理IP（带账号密码的那种）需要认证，留空表示不需要
+    if user is not None:
+        _PROXY_CFG["user"] = str(user).strip()
+    if password is not None:
+        _PROXY_CFG["pass"] = str(password)
     _PROXY_CFG["enabled"] = bool(enabled)
     _PROXY_CFG["prefer"] = bool(prefer)
 
 
+def _proxy_http(host, port):
+    """拼代理地址；有账号密码就带上（http://user:pass@host:port）。"""
+    user = str(_PROXY_CFG.get("user") or "").strip()
+    password = str(_PROXY_CFG.get("pass") or "")
+    if user:
+        return "http://%s:%s@%s:%d" % (
+            quote(user, safe=""),
+            quote(password, safe=""),
+            host,
+            int(port),
+        )
+    return "http://%s:%d" % (host, int(port))
+
+
 def proxy_url():
-    return f"http://{_PROXY_CFG['host']}:{_PROXY_CFG['port']}"
+    return _proxy_http(_PROXY_CFG["host"], _PROXY_CFG["port"])
 
 
 def _throttle():
@@ -371,7 +398,7 @@ def proxy_works(host="127.0.0.1", port=None, timeout=6):
     args = [
         _CURL, "-s", "-o", os.devnull, "--max-time", str(timeout),
         "-w", "%{http_code}",
-        "-x", "http://%s:%d" % (host, port),
+        "-x", _proxy_http(host, port),
         "-A", UA["User-Agent"],
         "https://vip.titan007.com/OverDown_n.aspx?id=1&l=0",
     ]
@@ -415,7 +442,14 @@ def auto_proxy(save_path=None, host=None):
             try:
                 with open(save_path, "w", encoding="utf-8") as f:
                     json.dump(
-                        {"host": host, "port": port, "enabled": True, "prefer": False},
+                        {
+                            "host": host,
+                            "port": port,
+                            "enabled": True,
+                            "prefer": False,
+                            "user": _PROXY_CFG.get("user", ""),
+                            "pass": _PROXY_CFG.get("pass", ""),
+                        },
                         f, ensure_ascii=False, indent=1,
                     )
             except Exception:

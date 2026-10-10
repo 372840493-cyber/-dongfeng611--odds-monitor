@@ -122,6 +122,8 @@ class ScannerApp(tk.Tk):
             self.proxy_cfg.get("port", 7890),
             self.proxy_cfg.get("enabled", True),
             self.proxy_cfg.get("prefer", True),
+            self.proxy_cfg.get("user", ""),
+            self.proxy_cfg.get("pass", ""),
         )
         self.sort_key = "time"
         self.sort_desc = False
@@ -445,6 +447,9 @@ class ScannerApp(tk.Tk):
             command=self._toggle_only_tend,
         ).pack(side="left", padx=4)
         ttk.Button(cfg, text="网络体检", command=self._net_check).pack(
+            side="left", padx=6
+        )
+        ttk.Button(cfg, text="代理设置", command=self._open_proxy_settings).pack(
             side="left", padx=6
         )
         ttk.Button(cfg2, text="汇总发送", command=self._send_digest_now).pack(
@@ -2004,6 +2009,7 @@ class ScannerApp(tk.Tk):
 
         btns = ttk.Frame(win)
         btns.pack(pady=8)
+
         ttk.Button(btns, text="保存", command=save).pack(side="left", padx=8)
         ttk.Button(btns, text="取消", command=win.destroy).pack(side="left", padx=8)
         win.geometry(f"+{self.winfo_rootx() + 100}+{self.winfo_rooty() + 150}")
@@ -2228,15 +2234,23 @@ class ScannerApp(tk.Tk):
         ttk.Label(frm, text="端口:").grid(row=1, column=0, sticky="w", pady=4)
         e_port = ttk.Entry(frm, width=10)
         e_port.grid(row=1, column=1, sticky="w", pady=4)
+        ttk.Label(frm, text="代理账号:").grid(row=2, column=0, sticky="w", pady=4)
+        e_user = ttk.Entry(frm, width=24)
+        e_user.grid(row=2, column=1, pady=4)
+        ttk.Label(frm, text="代理密码:").grid(row=3, column=0, sticky="w", pady=4)
+        e_pass = ttk.Entry(frm, width=24, show="*")
+        e_pass.grid(row=3, column=1, pady=4)
         e_host.insert(0, self.proxy_cfg.get("host", "127.0.0.1"))
         e_port.insert(0, str(self.proxy_cfg.get("port", 7890)))
+        e_user.insert(0, self.proxy_cfg.get("user", ""))
+        e_pass.insert(0, self.proxy_cfg.get("pass", ""))
         en = tk.BooleanVar(value=self.proxy_cfg.get("enabled", True))
         pf = tk.BooleanVar(value=self.proxy_cfg.get("prefer", True))
         ttk.Checkbutton(frm, text="启用代理", variable=en).grid(
-            row=2, column=0, columnspan=2, sticky="w", pady=2
+            row=4, column=0, columnspan=2, sticky="w", pady=2
         )
         ttk.Checkbutton(frm, text="优先走代理(直连被风控时勾选)", variable=pf).grid(
-            row=3, column=0, columnspan=2, sticky="w", pady=2
+            row=5, column=0, columnspan=2, sticky="w", pady=2
         )
 
         def save():
@@ -2247,6 +2261,8 @@ class ScannerApp(tk.Tk):
             self.proxy_cfg = {
                 "host": e_host.get().strip() or "127.0.0.1",
                 "port": port,
+                "user": e_user.get().strip(),
+                "pass": e_pass.get(),
                 "enabled": bool(en.get()),
                 "prefer": bool(pf.get()),
             }
@@ -2269,6 +2285,36 @@ class ScannerApp(tk.Tk):
 
         btns = ttk.Frame(win)
         btns.pack(pady=8)
+        def test_conn():
+            host = e_host.get().strip() or "127.0.0.1"
+            try:
+                port = int(e_port.get().strip())
+            except ValueError:
+                port = 7890
+            user = e_user.get().strip()
+            pwd = e_pass.get()
+            if en.get():
+                if user:
+                    from urllib.parse import quote as _q
+                    proxy = "http://%s:%s@%s:%d" % (_q(user, safe=""), _q(pwd, safe=""), host, port)
+                else:
+                    proxy = f"http://{host}:{port}"
+            else:
+                proxy = None
+            label = f"代理 {host}:{port}" if proxy else "直连"
+            url = "https://vip.titan007.com/OverDown_n.aspx?id=1&l=0"
+
+            def work():
+                t0 = time.time()
+                try:
+                    t._one_fetch(url, 20, proxy)
+                    self.events.put(("log", f"代理测试: {label} 可以拉盘 ✅（{time.time() - t0:.1f}s）"))
+                except Exception as ex:
+                    self.events.put(("log", f"代理测试: {label} 拉不到盘口（{str(ex)[:60]}）"))
+
+            threading.Thread(target=work, daemon=True).start()
+
+        ttk.Button(btns, text="测试能否拉盘", command=test_conn).pack(side="left", padx=8)
         ttk.Button(btns, text="保存", command=save).pack(side="left", padx=8)
         ttk.Button(btns, text="取消", command=win.destroy).pack(side="left", padx=8)
         win.geometry(f"+{self.winfo_rootx() + 120}+{self.winfo_rooty() + 140}")
