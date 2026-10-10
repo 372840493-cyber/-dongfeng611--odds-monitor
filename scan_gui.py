@@ -527,14 +527,15 @@ class ScannerApp(tk.Tk):
 
     # ---------------- 洲际导弹建议盯盘面板 ----------------
     REC_COLS = [
-        ("kickoff", "开赛 / 联赛", 140),
-        ("match", "对阵", 185),
-        ("advice", "建议", 155),
-        ("crown", "皇冠当前", 110),
-        ("score", "比分/时间", 100),
-        ("status", "状态", 330),
-        ("watch", "操作（盯盘）", 160),
+        ("kickoff", "开赛 / 联赛", 160),
+        ("match", "对阵", 215),
+        ("advice", "建议", 185),
+        ("crown", "皇冠当前", 125),
+        ("score", "比分/时间", 115),
+        ("status", "状态", 390),
+        ("watch", "操作（盯盘）", 185),
     ]
+    REC_FONT_SIZE = 12
 
     def _build_recommendation_tab(self, parent):
         self._rec_items = []
@@ -546,7 +547,11 @@ class ScannerApp(tk.Tk):
 
         top = ttk.Frame(parent, padding=(8, 8, 8, 2))
         top.pack(fill="x")
-        self.rec_summary = ttk.Label(top, text="洲际导弹建议盯盘：加载中…")
+        self.rec_summary = ttk.Label(
+            top,
+            text="洲际导弹建议盯盘：加载中…",
+            font=("Microsoft YaHei", self.REC_FONT_SIZE),
+        )
         self.rec_summary.pack(side="left")
         ttk.Button(
             top, text="手动刷新", command=lambda: self._refresh_recs(True)
@@ -566,8 +571,21 @@ class ScannerApp(tk.Tk):
         body.rowconfigure(0, weight=1)
         body.columnconfigure(0, weight=1)
         keys = [c[0] for c in self.REC_COLS]
+        style = ttk.Style(self)
+        try:
+            style.configure(
+                "Rec.Treeview",
+                font=("Microsoft YaHei", self.REC_FONT_SIZE),
+                rowheight=int(self.REC_FONT_SIZE * 2.4),
+            )
+            style.configure(
+                "Rec.Treeview.Heading",
+                font=("Microsoft YaHei", self.REC_FONT_SIZE, "bold"),
+            )
+        except Exception:
+            pass
         self.rec_tree = ttk.Treeview(
-            body, columns=keys, show="headings", selectmode="browse"
+            body, columns=keys, show="headings", selectmode="browse", style="Rec.Treeview"
         )
         for key, label, width in self.REC_COLS:
             self.rec_tree.heading(key, text=label)
