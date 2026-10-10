@@ -236,8 +236,8 @@ def _mark_host_fail(host):
         return
     n = _HOST_FAILS.get(host, 0) + 1
     _HOST_FAILS[host] = n
-    # 代理IP会抖(偶尔超时/被重置)，别两三次失败就把整个域名判死
-    limit = 6 if _is_remote_proxy() else 3
+    # 网络/代理会抖(偶尔超时/被重置)，别两三次失败就把整个域名判死
+    limit = 6 if _is_remote_proxy() else 5
     if n >= limit:
         _DEAD_HOSTS[host] = time.time() + _DEAD_COOLDOWN
 

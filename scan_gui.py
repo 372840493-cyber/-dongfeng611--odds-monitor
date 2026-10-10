@@ -129,7 +129,7 @@ class ScannerApp(tk.Tk):
         self._round_abort_after = (
             12
             if self.proxy_cfg.get("host", "") not in ("", "127.0.0.1", "localhost")
-            else 5
+            else 8
         )
         self.sort_key = "time"
         self.sort_desc = False
