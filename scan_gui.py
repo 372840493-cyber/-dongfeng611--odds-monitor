@@ -2214,12 +2214,21 @@ class ScannerApp(tk.Tk):
                     return {
                         "host": str(data.get("host", "127.0.0.1")),
                         "port": int(data.get("port", 7890)),
+                        "user": str(data.get("user", "")),
+                        "pass": str(data.get("pass", "")),
                         "enabled": bool(data.get("enabled", True)),
                         "prefer": bool(data.get("prefer", True)),
                     }
             except Exception:
                 pass
-        return {"host": "127.0.0.1", "port": 7890, "enabled": True, "prefer": True}
+        return {
+            "host": "127.0.0.1",
+            "port": 7890,
+            "user": "",
+            "pass": "",
+            "enabled": True,
+            "prefer": True,
+        }
 
     def _open_proxy_settings(self):
         win = tk.Toplevel(self)

@@ -131,6 +131,12 @@ def proxy_url():
     return _proxy_http(_PROXY_CFG["host"], _PROXY_CFG["port"])
 
 
+def _is_remote_proxy():
+    """是不是手动填的「代理IP」(不是本机加速器端口)。"""
+    host = str(_PROXY_CFG.get("host") or "").strip().lower()
+    return bool(host) and host not in ("127.0.0.1", "localhost")
+
+
 def _throttle():
     with _REQ_LOCK:
         now = time.time()
@@ -141,9 +147,12 @@ def _throttle():
 
 
 def _proxy_alive():
+    # 本机加速器端口 0.4 秒足够；远程「代理IP」要跨网络，给 3 秒，
+    # 否则经常被误判成"不可用"而直接走直连（这些域名直连本来就是被挡的）。
+    timeout = 3.0 if _is_remote_proxy() else 0.4
     try:
         s = socket.create_connection(
-            (_PROXY_CFG["host"], int(_PROXY_CFG["port"])), timeout=0.4
+            (_PROXY_CFG["host"], int(_PROXY_CFG["port"])), timeout=timeout
         )
         s.close()
         return True
@@ -337,9 +346,16 @@ def fetch_text(url, timeout=25):
                 _mark_host_fail(host)
             raise
     prefer = bool(_PROXY_CFG.get("prefer")) or host in _PROXY_FIRST_HOSTS
-    order = [proxy_url(), None] if prefer else [None, proxy_url()]
+    if prefer and _is_remote_proxy():
+        # 用的是代理IP：这些域名直连本来就被挡，失败就直接再试一次代理，
+        # 省掉每次 20 秒的直连空等（代理IP偶尔会抖，重试一次基本能拿到）。
+        order = [proxy_url(), proxy_url()]
+    else:
+        order = [proxy_url(), None] if prefer else [None, proxy_url()]
     last = None
-    for proxy in order:
+    for index, proxy in enumerate(order):
+        if index > 0 and _is_remote_proxy():
+            time.sleep(0.6)
         try:
             out = _one_fetch(url, timeout, proxy)
             _clear_host_fail(host)
@@ -435,6 +451,21 @@ def auto_proxy(save_path=None, host=None):
     """自动识别并启用可用代理; 找不到就直连。返回识别到的端口。"""
     host = host or _PROXY_CFG.get("host") or "127.0.0.1"
     clear_dead_hosts()
+    # 手动填的「代理IP」(不是本机加速器)优先：能用就一直用它，别被自动探测覆盖掉。
+    cfg_host = str(_PROXY_CFG.get("host") or "").strip()
+    try:
+        cfg_port = int(_PROXY_CFG.get("port") or 0)
+    except (TypeError, ValueError):
+        cfg_port = 0
+    if (
+        cfg_host
+        and cfg_host not in ("127.0.0.1", "localhost")
+        and cfg_port
+    ):
+        # 手动填的代理IP(带账号密码)就直接信任它：不要每轮再探测一次，
+        # 探测用的是 curl，票探对 TLS 指纹敏感会误判成"不可用"从而被清掉。
+        set_proxy(cfg_host, cfg_port, True, True)
+        return cfg_port
     port = detect_proxy_port(host)
     if port:
         set_proxy(host, port, True, False)
