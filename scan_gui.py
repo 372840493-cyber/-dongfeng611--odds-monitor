@@ -2533,7 +2533,26 @@ class ScannerApp(tk.Tk):
 
     def _engine_dir(self):
         cfg = getattr(self, "crown_src", None) or self._load_crown_source()
-        return (cfg.get("engine_dir") or "C:\\odds-monitor").strip()
+        configured = (cfg.get("engine_dir") or "").strip()
+        if configured and os.path.isfile(os.path.join(configured, "start-all.ps1")):
+            return configured
+        # 换电脑后目录可能不一样，自动找一下常见位置和软件旁边的同款目录
+        candidates = []
+        if configured:
+            candidates.append(configured)
+        candidates.extend(("C:\\odds-monitor", "D:\\odds-monitor"))
+        here = app_dir()
+        parent = os.path.dirname(here)
+        # 投注引擎可能就在本软件的上一级（安装包里就是这种布局）
+        candidates.append(parent)
+        candidates.append(os.path.dirname(parent))
+        for name in ("OddsMonitor", "odds-monitor", "东风61投注引擎", "东风61-投注引擎"):
+            candidates.append(os.path.join(here, name))
+            candidates.append(os.path.join(parent, name))
+        for path in candidates:
+            if path and os.path.isfile(os.path.join(path, "start-all.ps1")):
+                return path
+        return configured or "C:\\odds-monitor"
 
     def _powershell_exe(self):
         return os.path.join(
