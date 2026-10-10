@@ -2244,8 +2244,15 @@ class ScannerApp(tk.Tk):
             msg_lines.append(str(text))
             del msg_lines[:-24]
 
+        pending = []
+
         def pump():
             try:
+                while pending:
+                    try:
+                        pending.pop(0)()
+                    except Exception:
+                        pass
                 info.configure(state="normal")
                 info.delete("1.0", "end")
                 info.insert("end", "\n".join(msg_lines))
@@ -2253,6 +2260,34 @@ class ScannerApp(tk.Tk):
                 win.after(400, pump)
             except tk.TclError:
                 pass
+
+        def load_from_backend():
+            """打开窗口时，把投注引擎里现有的采集设置读出来填好。"""
+
+            def work():
+                try:
+                    res = self._backend_post(
+                        "/api/odds-monitor/data-sources/configs/list", {}, timeout=12
+                    )
+                    item = (res.get("data") or [{}])[0]
+                except Exception:
+                    return
+
+                def apply():
+                    if item.get("queryKeyword"):
+                        url_var.set(item.get("queryKeyword"))
+                    if item.get("username"):
+                        user_var.set(item.get("username"))
+                    if item.get("password"):
+                        pwd_var.set(item.get("password"))
+                    if item.get("intervalSeconds"):
+                        itv_var.set(str(item.get("intervalSeconds")))
+                    enabled_var.set(bool(item.get("enabled")))
+                    say("已读取出投注引擎里当前的采集设置")
+
+                pending.append(apply)
+
+            threading.Thread(target=work, daemon=True).start()
 
         def read_fields():
             return {
@@ -2389,6 +2424,7 @@ class ScannerApp(tk.Tk):
 
         win.geometry(f"+{self.winfo_rootx() + 90}+{self.winfo_rooty() + 120}")
         win.after(300, pump)
+        load_from_backend()
         on_status()
 
     def _settled_stats(self):
