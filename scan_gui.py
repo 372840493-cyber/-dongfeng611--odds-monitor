@@ -125,6 +125,12 @@ class ScannerApp(tk.Tk):
             self.proxy_cfg.get("user", ""),
             self.proxy_cfg.get("pass", ""),
         )
+        # 连续失败多少场就放弃这一轮：用「代理IP」时放宽，代理抖一下不至于整轮白跑
+        self._round_abort_after = (
+            12
+            if self.proxy_cfg.get("host", "") not in ("", "127.0.0.1", "localhost")
+            else 5
+        )
         self.sort_key = "time"
         self.sort_desc = False
         self.notes = {}
@@ -1111,7 +1117,7 @@ class ScannerApp(tk.Tk):
                     counters["err"] += 1
                     if (
                         counters["ok"] == 0
-                        and counters["err"] >= 5
+                        and counters["err"] >= self._round_abort_after
                         and not self._round_abort.is_set()
                     ):
                         self._round_abort.set()
