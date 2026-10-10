@@ -9,10 +9,14 @@ import os
 import queue
 import re
 import smtplib
+import socket
+import subprocess
 import sys
 import threading
 import time
 import tkinter as tk
+import urllib.error
+import urllib.request
 from datetime import datetime
 from email.header import Header
 from email.mime.text import MIMEText
@@ -125,6 +129,8 @@ class ScannerApp(tk.Tk):
         self._edit_active = False
         self._load_notes()
         self._load_skip()
+        self.crown_src = self._load_crown_source()
+        self._backend_token = None
         self._build()
         self._load_history()
         self.ou_stats = self._load_ou_stats()
@@ -156,6 +162,9 @@ class ScannerApp(tk.Tk):
         self.after(200, self._poll)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.tree.bind("<Double-1>", self._on_double_click)
+        self.after(1500, self._engine_tick)
+        if self.crown_src.get("auto_start_engine") and self.crown_src.get("enabled"):
+            self.after(2500, lambda: self._start_engine(quiet=True))
 
     def _recent_enough(self, r, hours=3.5):
         """刚被扫描到的场次是否还值得跟踪(开赛超过 hours 小时视为已完场)。"""
@@ -460,6 +469,23 @@ class ScannerApp(tk.Tk):
         ).pack(side="left", padx=4)
         self.status = ttk.Label(cfg, text="空闲", foreground="#1a6bb8")
         self.status.pack(side="right")
+
+        # 皇冠数据源(采集账号) + 投注引擎控制
+        cfg3 = ttk.Frame(self, padding=(8, 0, 8, 4))
+        cfg3.pack(fill="x")
+        ttk.Button(cfg3, text="皇冠数据源设置", command=self._open_crown_source).pack(
+            side="left", padx=(0, 6)
+        )
+        ttk.Button(
+            cfg3, text="启动投注引擎", command=lambda: self._start_engine()
+        ).pack(side="left", padx=4)
+        ttk.Button(cfg3, text="停止引擎", command=self._stop_engine).pack(
+            side="left", padx=4
+        )
+        self.engine_lbl = ttk.Label(cfg3, text="投注引擎: 检查中…", foreground="#666")
+        self.engine_lbl.pack(side="left", padx=10)
+        self.collect_lbl = ttk.Label(cfg3, text="皇冠采集: -", foreground="#666")
+        self.collect_lbl.pack(side="left", padx=10)
 
         body = ttk.Frame(self, padding=(8, 0, 8, 4))
         body.pack(fill="both", expand=True)
@@ -1928,6 +1954,443 @@ class ScannerApp(tk.Tk):
         win.geometry(f"+{self.winfo_rootx() + 120}+{self.winfo_rooty() + 140}")
         self.wait_window(win)
 
+    # ---------------- 皇冠数据源(采集账号) + 投注引擎 ----------------
+    def _crown_source_path(self):
+        return os.path.join(app_dir(), "crown_source.json")
+
+    def _load_crown_source(self):
+        """皇冠数据源设置，存在 crown_source.json（跟着软件目录走）。"""
+        cfg = {
+            "backend_url": "http://127.0.0.1:18000",
+            "engine_dir": "C:\\odds-monitor",
+            "enabled": False,
+            "base_url": "",
+            "username": "",
+            "password": "",
+            "interval": 60,
+            "auto_start_engine": False,
+        }
+        p = self._crown_source_path()
+        if os.path.exists(p):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    data = json.load(f) or {}
+                if isinstance(data, dict):
+                    cfg.update(data)
+            except Exception:
+                pass
+        return cfg
+
+    def _save_crown_source(self, cfg):
+        try:
+            with open(self._crown_source_path(), "w", encoding="utf-8") as f:
+                json.dump(cfg, f, ensure_ascii=False, indent=1)
+        except Exception as e:
+            self._append_log(f"皇冠数据源保存失败: {e}")
+
+    def _backend_base(self):
+        cfg = getattr(self, "crown_src", None) or self._load_crown_source()
+        return (cfg.get("backend_url") or "http://127.0.0.1:18000").strip().rstrip("/")
+
+    def _backend_login(self):
+        """免密登录本机投注引擎（免密接口只允许本机访问）。"""
+        url = self._backend_base() + "/api/auth/local-login"
+        req = urllib.request.Request(
+            url,
+            data=b"{}",
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        token = ((data or {}).get("data") or {}).get("token")
+        if not token:
+            raise RuntimeError(str((data or {}).get("msg") or "免密登录失败"))
+        self._backend_token = token
+        return token
+
+    def _backend_post(self, path, payload=None, timeout=30, retry=True):
+        """调用本机投注引擎接口。"""
+        url = self._backend_base() + path
+        body = json.dumps(
+            payload if payload is not None else {}, ensure_ascii=False
+        ).encode("utf-8")
+        if not getattr(self, "_backend_token", None):
+            self._backend_login()
+        req = urllib.request.Request(
+            url,
+            data=body,
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": "Bearer " + str(self._backend_token),
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            if e.code == 401 and retry:
+                self._backend_login()
+                return self._backend_post(path, payload, timeout, retry=False)
+            raise
+
+    def _crown_config_payload(self, cfg):
+        """拼成投注引擎「数据源设置」要的结构。"""
+        return {
+            "sourceKey": "crown",
+            "displayName": "皇冠",
+            "enabled": bool(cfg.get("enabled")),
+            "username": cfg.get("username") or "",
+            "password": cfg.get("password") or "",
+            "queryKeyword": cfg.get("base_url") or "",
+            "intervalSeconds": int(cfg.get("interval") or 60),
+            "updatedAt": 0,
+        }
+
+    def _fmt_ts(self, millis):
+        try:
+            if not millis:
+                return ""
+            return datetime.fromtimestamp(int(millis) / 1000.0).strftime("%m-%d %H:%M:%S")
+        except Exception:
+            return ""
+
+    def _engine_running(self):
+        try:
+            with socket.create_connection(("127.0.0.1", 18000), 1.0):
+                return True
+        except OSError:
+            return False
+
+    def _engine_dir(self):
+        cfg = getattr(self, "crown_src", None) or self._load_crown_source()
+        return (cfg.get("engine_dir") or "C:\\odds-monitor").strip()
+
+    def _powershell_exe(self):
+        return os.path.join(
+            os.environ.get("SystemRoot", "C:\\Windows"),
+            "System32",
+            "WindowsPowerShell",
+            "v1.0",
+            "powershell.exe",
+        )
+
+    def _start_engine(self, quiet=False):
+        """一键启动投注引擎（MySQL+后端+看板），等同桌面上的 start-all.ps1。"""
+        if self._engine_running():
+            if not quiet:
+                self._append_log("投注引擎已经在运行（端口 18000）")
+            return True
+        root = self._engine_dir()
+        script = os.path.join(root, "start-all.ps1")
+        if not os.path.isfile(script):
+            self._append_log(
+                f"找不到投注引擎脚本: {script}（可点「皇冠数据源设置」改引擎目录）"
+            )
+            return False
+        try:
+            subprocess.Popen(
+                [
+                    self._powershell_exe(),
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    script,
+                ],
+                cwd=root,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except Exception as e:
+            self._append_log(f"启动投注引擎失败: {e}")
+            return False
+        self._append_log("投注引擎启动中…（约 1-2 分钟，端口 18000 起来就绪）")
+        return True
+
+    def _stop_engine(self):
+        """只停后端进程，MySQL 保持运行（避免数据库文件损坏）。"""
+        cmd = (
+            "$p=(Get-NetTCPConnection -State Listen -LocalPort 18000 "
+            "-ErrorAction SilentlyContinue).OwningProcess;"
+            "if($p){Stop-Process -Id $p -Force; 'stopped'}else{'notrunning'}"
+        )
+        try:
+            subprocess.run(
+                [self._powershell_exe(), "-NoProfile", "-Command", cmd],
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                timeout=40,
+            )
+            self._append_log("投注引擎已停止（MySQL 仍在运行，不伤数据）")
+        except Exception as e:
+            self._append_log(f"停止投注引擎失败: {e}")
+
+    def _engine_tick(self):
+        """定时刷新底部「投注引擎 / 皇冠采集」状态。"""
+        try:
+            running = self._engine_running()
+            if hasattr(self, "engine_lbl"):
+                self.engine_lbl.configure(
+                    text="投注引擎: 运行中" if running else "投注引擎: 未启动",
+                    foreground="#1a7f37" if running else "#b45309",
+                )
+            if running:
+                self._refresh_collect_label()
+        except Exception:
+            pass
+        self.after(8000, self._engine_tick)
+
+    def _refresh_collect_label(self):
+        """后台拉一次采集状态（不卡界面）。"""
+
+        def work():
+            try:
+                res = self._backend_post(
+                    "/api/odds-monitor/data-sources/status/list", {}, timeout=12
+                )
+                items = (res or {}).get("data") or []
+                if not items:
+                    text = "皇冠采集: 未配置"
+                else:
+                    s = items[0]
+                    state = {
+                        "success": "正常",
+                        "waiting": "等待首次采集",
+                        "disabled": "已关闭",
+                        "failed_login": "登录失败",
+                        "failed_network": "网络异常",
+                    }.get(str(s.get("currentStatus")), str(s.get("currentStatus")))
+                    if not s.get("enabled"):
+                        state = "已关闭"
+                    ts = self._fmt_ts(s.get("lastCollectTime"))
+                    text = f"皇冠采集: {state}" + (f"（{ts}）" if ts else "")
+            except Exception:
+                text = "皇冠采集: 读取不到"
+            self.events.put(("crown_status", text))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _open_crown_source(self):
+        cfg = self._load_crown_source()
+        win = tk.Toplevel(self)
+        win.title("皇冠数据源设置")
+        win.transient(self)
+        win.resizable(False, False)
+        frm = ttk.Frame(win, padding=12)
+        frm.pack(fill="both", expand=True)
+
+        tk.Label(
+            frm,
+            text=(
+                "采集账号（账号1）：只用来读皇冠盘口和水位，不参与下单\n"
+                "投注账号（账号2）：有额度、专门下单，在「皇冠投注」页维护，可多个"
+            ),
+            justify="left",
+            font=("Microsoft YaHei", 9),
+            fg="#8a4b08",
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
+
+        enabled_var = tk.BooleanVar(value=bool(cfg.get("enabled")))
+        url_var = tk.StringVar(value=cfg.get("base_url") or "")
+        user_var = tk.StringVar(value=cfg.get("username") or "")
+        pwd_var = tk.StringVar(value=cfg.get("password") or "")
+        itv_var = tk.StringVar(value=str(cfg.get("interval") or 60))
+        backend_var = tk.StringVar(value=cfg.get("backend_url") or "http://127.0.0.1:18000")
+        engine_var = tk.StringVar(value=cfg.get("engine_dir") or "C:\\odds-monitor")
+        auto_var = tk.BooleanVar(value=bool(cfg.get("auto_start_engine")))
+
+        def field(row, label, var, width=36, show=None):
+            ttk.Label(frm, text=label).grid(
+                row=row, column=0, sticky="e", padx=(0, 6), pady=3
+            )
+            ttk.Entry(frm, textvariable=var, width=width, show=show).grid(
+                row=row, column=1, sticky="w", pady=3
+            )
+
+        r = 1
+        ttk.Checkbutton(
+            frm, text="启用皇冠采集（启用后投注引擎按间隔自动采集）", variable=enabled_var
+        ).grid(row=r, column=0, columnspan=2, sticky="w", pady=(0, 4))
+        r += 1
+        field(r, "皇冠平台网址:", url_var, 42)
+        r += 1
+        field(r, "采集账号:", user_var, 22)
+        r += 1
+        field(r, "采集密码:", pwd_var, 22, show="*")
+        r += 1
+        field(r, "采集间隔(秒):", itv_var, 8)
+        r += 1
+        ttk.Separator(frm, orient="horizontal").grid(
+            row=r, column=0, columnspan=2, sticky="ew", pady=8
+        )
+        r += 1
+        field(r, "引擎目录:", engine_var, 30)
+        r += 1
+        field(r, "引擎接口:", backend_var, 30)
+        r += 1
+        ttk.Checkbutton(
+            frm, text="打开本软件时自动启动投注引擎", variable=auto_var
+        ).grid(row=r, column=0, columnspan=2, sticky="w", pady=3)
+        r += 1
+        info = tk.Text(frm, width=62, height=10, state="disabled", font=("Microsoft YaHei", 9))
+        info.grid(row=r, column=0, columnspan=2, pady=(8, 2), sticky="we")
+        r += 1
+        btns = ttk.Frame(frm)
+        btns.grid(row=r, column=0, columnspan=2, pady=(4, 0), sticky="w")
+
+        msg_lines = []
+
+        def say(text):
+            msg_lines.append(str(text))
+            del msg_lines[:-24]
+
+        def pump():
+            try:
+                info.configure(state="normal")
+                info.delete("1.0", "end")
+                info.insert("end", "\n".join(msg_lines))
+                info.configure(state="disabled")
+                win.after(400, pump)
+            except tk.TclError:
+                pass
+
+        def read_fields():
+            return {
+                "backend_url": backend_var.get().strip() or "http://127.0.0.1:18000",
+                "engine_dir": engine_var.get().strip() or "C:\\odds-monitor",
+                "enabled": bool(enabled_var.get()),
+                "base_url": url_var.get().strip(),
+                "username": user_var.get().strip(),
+                "password": pwd_var.get(),
+                "interval": itv_var.get().strip() or "60",
+                "auto_start_engine": bool(auto_var.get()),
+            }
+
+        def collect():
+            c = read_fields()
+            try:
+                c["interval"] = max(10, int(str(c["interval"]).strip()))
+            except Exception:
+                messagebox.showwarning("提示", "采集间隔要填数字（秒），最少 10 秒", parent=win)
+                return None
+            if c["enabled"] and not c["base_url"]:
+                messagebox.showwarning("提示", "启用采集前，先填皇冠平台网址", parent=win)
+                return None
+            if c["enabled"] and not c["username"]:
+                messagebox.showwarning("提示", "启用采集前，先填采集账号", parent=win)
+                return None
+            itv_var.set(str(c["interval"]))
+            self.crown_src = c
+            self._save_crown_source(c)
+            return c
+
+        def push(c):
+            res = self._backend_post(
+                "/api/odds-monitor/data-sources/configs/save",
+                {"configs": [self._crown_config_payload(c)]},
+            )
+            if (res or {}).get("code") not in (0, None):
+                raise RuntimeError(str((res or {}).get("msg") or "保存被拒绝"))
+            return res
+
+        def on_save():
+            c = collect()
+            if not c:
+                return
+            say("本地已保存，正在下发给投注引擎…")
+
+            def work():
+                try:
+                    push(c)
+                    say(
+                        "已下发 ✅ 采集%s（间隔 %d 秒）"
+                        % ("已启用" if c["enabled"] else "已关闭", c["interval"])
+                    )
+                    if c["enabled"] and not self._engine_running():
+                        say("提示：投注引擎没启动，采集不会跑 → 点「启动投注引擎」")
+                except Exception as ex:
+                    say(f"下发失败：{ex}")
+                    say("→ 先点「启动投注引擎」，等它跑起来再保存")
+
+            threading.Thread(target=work, daemon=True).start()
+
+        def on_test():
+            c = collect()
+            if not c:
+                return
+            say("正在用采集账号登录皇冠检测…")
+
+            def work():
+                try:
+                    push(c)
+                    res = self._backend_post(
+                        "/api/odds-monitor/data-sources/crown/check-account", {}, timeout=60
+                    )
+                    data = (res or {}).get("data") or {}
+                    if str(data.get("status")) == "success":
+                        say(f"采集账号可用 ✅ 余额 {data.get('balance')}")
+                    else:
+                        say(f"采集账号检测失败：{data.get('message')}")
+                except Exception as ex:
+                    say(f"检测失败：{ex}")
+
+            threading.Thread(target=work, daemon=True).start()
+
+        def on_status():
+            say("正在读取采集状态和投注账号…")
+
+            def work():
+                try:
+                    res = self._backend_post(
+                        "/api/odds-monitor/data-sources/status/list", {}, timeout=20
+                    )
+                    items = (res or {}).get("data") or []
+                    if not items:
+                        say("还没有皇冠数据源配置")
+                    for s in items:
+                        state = {
+                            "success": "采集正常",
+                            "waiting": "等待首次采集",
+                            "disabled": "已关闭",
+                            "failed_login": "登录失败",
+                            "failed_network": "网络异常",
+                        }.get(str(s.get("currentStatus")), str(s.get("currentStatus")))
+                        extra = f" 最近：{self._fmt_ts(s.get('lastCollectTime'))}" if s.get("lastCollectTime") else ""
+                        fail = f" 原因：{s.get('failureReason')}" if s.get("failureReason") else ""
+                        say(f"[采集] {s.get('displayName')}：{state}{extra}{fail}")
+                    res2 = self._backend_post("/api/auto-betting/accounts/list", {}, timeout=20)
+                    accs = (res2 or {}).get("data") or []
+                    if not accs:
+                        say("[投注账号] 没有配置（到「皇冠投注」页添加有额度的账号）")
+                    for a in accs:
+                        name = a.get("displayName") or a.get("accountKey")
+                        flag = "启用" if a.get("bettingEnabled") else "停用"
+                        port = a.get("localDebugPort") or "-"
+                        say(f"[投注账号] {name}（{flag}）浏览器端口 {port}")
+                except Exception as ex:
+                    say(f"读取失败：{ex}")
+
+            threading.Thread(target=work, daemon=True).start()
+
+        def on_start():
+            if self._start_engine():
+                say("正在启动投注引擎…约 1-2 分钟，端口 18000 起来就绪")
+
+        def on_stop():
+            self._stop_engine()
+            say("已请求停止投注引擎（MySQL 保持运行）")
+
+        ttk.Button(btns, text="保存并应用", command=on_save).pack(side="left", padx=(0, 6))
+        ttk.Button(btns, text="测试采集账号", command=on_test).pack(side="left", padx=4)
+        ttk.Button(btns, text="刷新状态", command=on_status).pack(side="left", padx=4)
+        ttk.Button(btns, text="启动投注引擎", command=on_start).pack(side="left", padx=4)
+        ttk.Button(btns, text="停止引擎", command=on_stop).pack(side="left", padx=4)
+        ttk.Button(btns, text="关闭", command=win.destroy).pack(side="left", padx=4)
+
+        win.geometry(f"+{self.winfo_rootx() + 90}+{self.winfo_rooty() + 120}")
+        win.after(300, pump)
+        on_status()
+
     def _settled_stats(self):
         win = loss = push = 0
         for r in self.all_rows:
@@ -1979,6 +2442,9 @@ class ScannerApp(tk.Tk):
                 kind = ev[0]
                 if kind == "log":
                     self._append_log(ev[1])
+                elif kind == "crown_status":
+                    if getattr(self, "collect_lbl", None) is not None:
+                        self.collect_lbl.configure(text=ev[1])
                 elif kind == "row":
                     r, is_new = ev[1], ev[2]
                     if is_new and not self._recent_enough(r):

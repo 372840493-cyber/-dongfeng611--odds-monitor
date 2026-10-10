@@ -10,6 +10,7 @@ league_filter.json
 app_settings.json
 proxy_config.json
 daily_mail_state.json
+crown_source.json
 *.spec
 backups/
 ou_compare_stats.json
