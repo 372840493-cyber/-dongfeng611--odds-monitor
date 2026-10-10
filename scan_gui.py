@@ -163,6 +163,8 @@ class ScannerApp(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.tree.bind("<Double-1>", self._on_double_click)
         self.after(1500, self._engine_tick)
+        self.after(3000, lambda: self._refresh_recs(True))
+        self.after(10000, self._rec_tick)
         if self.crown_src.get("auto_start_engine") and self.crown_src.get("enabled"):
             self.after(2500, lambda: self._start_engine(quiet=True))
 
@@ -487,7 +489,15 @@ class ScannerApp(tk.Tk):
         self.collect_lbl = ttk.Label(cfg3, text="皇冠采集: -", foreground="#666")
         self.collect_lbl.pack(side="left", padx=10)
 
-        body = ttk.Frame(self, padding=(8, 0, 8, 4))
+        # 两个页签：「扫描列表」和「洲际导弹建议盯盘」，点标签切换
+        self.notebook = ttk.Notebook(self)
+        self.notebook.pack(fill="both", expand=True, padx=6, pady=(0, 4))
+        self.tab_scan = ttk.Frame(self.notebook)
+        self.tab_rec = ttk.Frame(self.notebook)
+        self.notebook.add(self.tab_scan, text="扫描列表")
+        self.notebook.add(self.tab_rec, text="洲际导弹建议盯盘")
+
+        body = ttk.Frame(self.tab_scan, padding=(8, 0, 8, 4))
         body.pack(fill="both", expand=True)
         body.rowconfigure(0, weight=1)
         body.columnconfigure(0, weight=1)
@@ -508,10 +518,438 @@ class ScannerApp(tk.Tk):
         self.tree.tag_configure("diff2", background="#ffe0dc")
         self.tree.tag_configure("buyrow", foreground="#d00000")
 
-        logf = ttk.Frame(self, padding=(8, 0, 8, 8))
+        logf = ttk.Frame(self.tab_scan, padding=(8, 0, 8, 8))
         logf.pack(fill="x")
         self.logtxt = tk.Text(logf, height=6, state="disabled", font=("Microsoft YaHei", 9))
         self.logtxt.pack(fill="x")
+
+        self._build_recommendation_tab(self.tab_rec)
+
+    # ---------------- 洲际导弹建议盯盘面板 ----------------
+    REC_COLS = [
+        ("kickoff", "开赛 / 联赛", 140),
+        ("match", "对阵", 185),
+        ("advice", "建议", 155),
+        ("crown", "皇冠当前", 110),
+        ("score", "比分/时间", 100),
+        ("status", "状态", 330),
+        ("watch", "操作（盯盘）", 160),
+    ]
+
+    def _build_recommendation_tab(self, parent):
+        self._rec_items = []
+        self._rec_range = "0.88-1.5"
+        self._rec_auto = False
+        self._rec_last_fetch = 0.0
+        self._rec_busy = False
+        self._rec_choice_values = []
+
+        top = ttk.Frame(parent, padding=(8, 8, 8, 2))
+        top.pack(fill="x")
+        self.rec_summary = ttk.Label(top, text="洲际导弹建议盯盘：加载中…")
+        self.rec_summary.pack(side="left")
+        ttk.Button(
+            top, text="手动刷新", command=lambda: self._refresh_recs(True)
+        ).pack(side="right", padx=4)
+        ttk.Button(
+            top, text="保存水位区间", command=self._save_rec_water_range
+        ).pack(side="right", padx=4)
+        self.rec_wmax = ttk.Entry(top, width=6)
+        self.rec_wmax.pack(side="right")
+        ttk.Label(top, text="-").pack(side="right")
+        self.rec_wmin = ttk.Entry(top, width=6)
+        self.rec_wmin.pack(side="right")
+        ttk.Label(top, text="水位区间:").pack(side="right", padx=(12, 2))
+
+        body = ttk.Frame(parent, padding=(8, 0, 8, 2))
+        body.pack(fill="both", expand=True)
+        body.rowconfigure(0, weight=1)
+        body.columnconfigure(0, weight=1)
+        keys = [c[0] for c in self.REC_COLS]
+        self.rec_tree = ttk.Treeview(
+            body, columns=keys, show="headings", selectmode="browse"
+        )
+        for key, label, width in self.REC_COLS:
+            self.rec_tree.heading(key, text=label)
+            self.rec_tree.column(key, width=width, anchor="w")
+        vs = ttk.Scrollbar(body, orient="vertical", command=self.rec_tree.yview)
+        hs = ttk.Scrollbar(body, orient="horizontal", command=self.rec_tree.xview)
+        self.rec_tree.configure(yscrollcommand=vs.set, xscrollcommand=hs.set)
+        self.rec_tree.grid(row=0, column=0, sticky="nsew")
+        vs.grid(row=0, column=1, sticky="ns")
+        hs.grid(row=1, column=0, sticky="ew")
+        self.rec_tree.tag_configure("ready", foreground="#0a7a26")
+        self.rec_tree.tag_configure("bet", foreground="#1a4fbf")
+        self.rec_tree.tag_configure("void", foreground="#8a8a8a")
+        self.rec_tree.tag_configure("rec", foreground="#333333")
+        self.rec_tree.bind("<<TreeviewSelect>>", self._on_rec_select)
+        self.rec_tree.bind("<Double-1>", self._on_rec_double)
+
+        bar = ttk.Frame(parent, padding=(8, 0, 8, 8))
+        bar.pack(fill="x")
+        ttk.Label(bar, text="盯盘盘口:").pack(side="left")
+        self.rec_line = ttk.Combobox(bar, width=16, state="readonly", values=())
+        self.rec_line.pack(side="left", padx=6)
+        ttk.Button(
+            bar, text="给选中这场挂上 / 改盯盘", command=self._apply_rec_watch
+        ).pack(side="left", padx=4)
+        ttk.Label(
+            bar,
+            text="（先点一行选中，再选盘口；双击一行也能直接选）",
+            foreground="#8a4b08",
+        ).pack(side="left", padx=8)
+
+    def _rec_tick(self):
+        try:
+            self._refresh_recs()
+        except Exception:
+            pass
+        self.after(10000, self._rec_tick)
+
+    def _refresh_recs(self, force=False):
+        """后台拉一次建议盯盘数据（默认 10 秒一次，不卡界面）。"""
+        now_ts = time.time()
+        if not force and now_ts - getattr(self, "_rec_last_fetch", 0.0) < 9.0:
+            return
+        if getattr(self, "_rec_busy", False):
+            return
+        self._rec_last_fetch = now_ts
+        self._rec_busy = True
+
+        def work():
+            try:
+                res = self._backend_post(
+                    "/api/odds-monitor/recommendations/list", {}, timeout=40
+                )
+                items = (res or {}).get("data") or []
+                cfg = {}
+                try:
+                    cfg_res = self._backend_post("/api/system/config/get", {}, timeout=20)
+                    cfg = (cfg_res or {}).get("data") or {}
+                except Exception:
+                    cfg = {}
+                self.events.put(("recs", {"items": items, "cfg": cfg}))
+            except Exception as ex:
+                self.events.put(("recs", {"error": str(ex)}))
+            finally:
+                self._rec_busy = False
+
+        threading.Thread(target=work, daemon=True).start()
+
+    @staticmethod
+    def _fmt_line(value):
+        """0.75 -> 0.5/1；-0.75 -> -0.5/1（和看板显示习惯一致）。"""
+        try:
+            num = float(value)
+        except (TypeError, ValueError):
+            return str(value)
+        absv = abs(num)
+        quarters = absv * 4
+        if abs(quarters - round(quarters)) < 1e-6 and int(round(quarters)) % 2 == 1:
+            lower = int(absv * 2) / 2.0
+            upper = lower + 0.5
+            return ("-" if num < 0 else "") + "%g/%g" % (lower, upper)
+        return "%g" % num
+
+    def _line_choices(self, base):
+        """可选盯盘盘口：建议值本身，往上最多半档，往下到建议值 -2 球。"""
+        try:
+            base = float(base)
+        except (TypeError, ValueError):
+            return []
+        values = []
+        step = 2
+        while step >= -8:
+            values.append(round(base + 0.25 * step, 2))
+            step -= 1
+        out = []
+        for value in sorted(set(values)):
+            out.append(value)
+        return out
+
+    def _selected_rec(self):
+        sel = self.rec_tree.selection()
+        if not sel:
+            return None
+        try:
+            return self._rec_items[int(sel[0])]
+        except (ValueError, IndexError, TypeError):
+            return None
+
+    def _on_rec_select(self, _event=None):
+        item = self._selected_rec()
+        if not item:
+            return
+        choices = self._line_choices(item.get("lineValue"))
+        if not choices:
+            return
+        base = float(item.get("lineValue") or 0)
+        labels = [
+            self._fmt_line(v) + ("（建议）" if abs(v - base) < 1e-9 else "")
+            for v in choices
+        ]
+        self._rec_choice_values = choices
+        self.rec_line.configure(values=labels)
+        current = item.get("watchTargetLine")
+        try:
+            current_value = float(current)
+        except (TypeError, ValueError):
+            current_value = base
+        index = min(range(len(choices)), key=lambda i: abs(choices[i] - current_value))
+        self.rec_line.set(labels[index])
+
+    def _on_rec_double(self, _event=None):
+        item = self._selected_rec()
+        if not item:
+            return
+        choices = self._line_choices(item.get("lineValue"))
+        if not choices:
+            return
+        win = tk.Toplevel(self)
+        win.title("选择盯盘盘口")
+        win.transient(self)
+        win.resizable(False, False)
+        tk.Label(
+            win,
+            text=(
+                f"{item.get('homeTeam')} vs {item.get('awayTeam')}\n"
+                f"洲际导弹建议：{self._fmt_line(item.get('lineValue'))}"
+            ),
+            justify="left",
+            font=("Microsoft YaHei", 10),
+            padx=16,
+            pady=10,
+        ).pack()
+        cb = ttk.Combobox(
+            win,
+            width=18,
+            state="readonly",
+            values=[self._fmt_line(v) for v in choices],
+        )
+        cb.pack(padx=16)
+        current = item.get("watchTargetLine")
+        try:
+            current_value = float(current)
+        except (TypeError, ValueError):
+            current_value = float(item.get("lineValue") or 0)
+        cb.current(min(range(len(choices)), key=lambda i: abs(choices[i] - current_value)))
+        ttk.Label(
+            win, text="只能比建议盘口更严（更低）才有效", foreground="#8a4b08"
+        ).pack(pady=(6, 0))
+
+        def ok():
+            index = cb.current()
+            if index < 0:
+                return
+            target = "%g" % choices[index]
+            win.destroy()
+            self._send_watch(item, target)
+
+        btns = ttk.Frame(win)
+        btns.pack(pady=10)
+        ttk.Button(btns, text="确定盯这个盘口", command=ok).pack(side="left", padx=6)
+        ttk.Button(btns, text="取消", command=win.destroy).pack(side="left", padx=6)
+        win.geometry(f"+{self.winfo_rootx() + 200}+{self.winfo_rooty() + 200}")
+
+    def _apply_rec_watch(self):
+        item = self._selected_rec()
+        if not item:
+            messagebox.showinfo("提示", "先在上面点一行选中比赛")
+            return
+        index = self.rec_line.current()
+        values = getattr(self, "_rec_choice_values", [])
+        if index < 0 or index >= len(values):
+            messagebox.showinfo("提示", "先在右边选一个盯盘盘口")
+            return
+        self._send_watch(item, "%g" % values[index])
+
+    def _send_watch(self, item, target):
+        payload = {
+            "homeTeam": item.get("homeTeam") or "",
+            "awayTeam": item.get("awayTeam") or "",
+            "marketType": item.get("marketType") or "handicap",
+            "side": item.get("side") or "home",
+            "targetLine": str(target),
+            "phase": "any",
+        }
+
+        def work():
+            try:
+                res = self._backend_post(
+                    "/api/odds-monitor/recommendations/watch", payload, timeout=25
+                )
+                if (res or {}).get("data"):
+                    self.events.put(
+                        (
+                            "log",
+                            "已挂盯盘：%s vs %s → %s"
+                            % (payload["homeTeam"], payload["awayTeam"], self._fmt_line(target)),
+                        )
+                    )
+                else:
+                    self.events.put(("log", "盯盘没保存成功，请检查投注引擎是否在运行"))
+            except Exception as ex:
+                self.events.put(("log", f"盯盘保存失败: {ex}"))
+            self._rec_last_fetch = 0.0
+            self._refresh_recs(True)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _save_rec_water_range(self):
+        wmin = self.rec_wmin.get().strip()
+        wmax = self.rec_wmax.get().strip()
+        if not wmin or not wmax:
+            messagebox.showwarning("提示", "水位区间要填两个数字，例如 0.88 和 1.5")
+            return
+
+        def work():
+            try:
+                res = self._backend_post(
+                    "/api/system/config/recommendation-water-range/update",
+                    {"waterMin": wmin, "waterMax": wmax},
+                    timeout=25,
+                )
+                if (res or {}).get("code") not in (0, None):
+                    self.events.put(
+                        ("log", f"水位区间保存失败: {(res or {}).get('msg')}")
+                    )
+                else:
+                    self.events.put(("log", f"水位区间已保存: {wmin}-{wmax}"))
+            except Exception as ex:
+                self.events.put(("log", f"水位区间保存失败: {ex}"))
+            self._rec_last_fetch = 0.0
+            self._refresh_recs(True)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _rec_water_focus(self):
+        try:
+            return self.focus_get() in (self.rec_wmin, self.rec_wmax)
+        except Exception:
+            return False
+
+    def _rec_tag(self, item):
+        if item.get("betPlaced"):
+            return "bet"
+        if (
+            item.get("lineMatched")
+            and item.get("waterInRange")
+            and not item.get("voidedByGoal")
+            and not item.get("voidedByTimeLimit")
+            and not item.get("crownDataStale")
+        ):
+            return "ready"
+        if item.get("voidedByGoal") or item.get("voidedByTimeLimit"):
+            return "void"
+        return "rec"
+
+    def _rec_status(self, item):
+        if item.get("betPlaced"):
+            names = "、".join([n for n in (item.get("betAccountNames") or []) if n])
+            text = "已下注" + (f"（{names}）" if names else "")
+            if item.get("betReference"):
+                text += f" 注单 {item['betReference']}"
+            extra = []
+            if item.get("voidedByGoal"):
+                extra.append("已进球·停")
+            if item.get("voidedByTimeLimit"):
+                extra.append("超75分钟·停")
+            if extra:
+                text += "｜" + " / ".join(extra)
+            return text
+        if item.get("voidedByTimeLimit"):
+            return "超 75 分钟 · 作废"
+        if item.get("voidedByGoal"):
+            return "建议方已进球 · 作废"
+        if item.get("crownDataStale"):
+            return "皇冠盘口数据已过期"
+        if item.get("lineMatched") and item.get("waterInRange"):
+            return "可触发 · 已自动产生信号" if self._rec_auto else "可触发"
+        if item.get("lineMatched"):
+            return f"水位不在 {self._rec_range}"
+        return "未到盘口"
+
+    def _rec_watch_text(self, item):
+        target = item.get("watchTargetLine")
+        if not target:
+            return "-"
+        return "盯 %s：%s" % (
+            self._fmt_line(target),
+            "已到" if item.get("watchReached") else "未到",
+        )
+
+    def _rec_values(self, item):
+        market = "大小球" if item.get("marketType") == "total" else "让球"
+        side = {
+            "home": "主队",
+            "away": "客队",
+            "over": "大球",
+            "under": "小球",
+        }.get(item.get("side"), item.get("side") or "")
+        advice = f"{market} {side} {item.get('lineHint') or ''}".strip()
+        if item.get("reversedFixture"):
+            advice += "（皇冠主客颠倒）"
+        water = item.get("crownWater")
+        if isinstance(water, (int, float)):
+            crown = f"{item.get('crownLine') or '-'} / {water:.2f}"
+        else:
+            crown = f"{item.get('crownLine') or '-'} / -"
+        score = item.get("scoreText") or ""
+        minute = item.get("elapsedMinutes")
+        if isinstance(minute, int) and minute > 0:
+            score = (score + f" {minute}'").strip()
+        elif item.get("livePhaseText"):
+            score = (score + " " + str(item.get("livePhaseText"))).strip()
+        return (
+            f"{item.get('kickoff') or '-'} {item.get('leagueName') or ''}".strip(),
+            f"{item.get('homeTeam')} vs {item.get('awayTeam')}",
+            advice,
+            crown,
+            score or "-",
+            self._rec_status(item),
+            self._rec_watch_text(item),
+        )
+
+    def _render_recs(self, payload):
+        if payload.get("error"):
+            self.rec_summary.configure(text=f"读取建议失败：{payload['error']}")
+            return
+        items = payload.get("items") or []
+        cfg = payload.get("cfg") or {}
+        wmin = str(cfg.get("recommendationWaterMin") or "0.88")
+        wmax = str(cfg.get("recommendationWaterMax") or "1.5")
+        self._rec_auto = bool(cfg.get("autoBettingEnabled"))
+        self._rec_range = f"{wmin}-{wmax}"
+        if not self._rec_water_focus():
+            self.rec_wmin.delete(0, "end")
+            self.rec_wmin.insert(0, wmin)
+            self.rec_wmax.delete(0, "end")
+            self.rec_wmax.insert(0, wmax)
+        self._rec_items = items
+        selected = self.rec_tree.selection()
+        keep = selected[0] if selected else None
+        self.rec_tree.delete(*self.rec_tree.get_children())
+        ready = 0
+        for index, item in enumerate(items):
+            tag = self._rec_tag(item)
+            if tag == "ready":
+                ready += 1
+            self.rec_tree.insert(
+                "", "end", iid=str(index), values=self._rec_values(item), tags=(tag,)
+            )
+        if keep is not None and self.rec_tree.exists(keep):
+            self.rec_tree.selection_set(keep)
+        self.rec_summary.configure(
+            text=(
+                f"共 {len(items)} 条建议（{ready} 条可触发）｜以洲际导弹建议方向为准："
+                f"皇冠盘口降到建议盘口以内、且水位落在 {self._rec_range} 之间才会触发信号并投注"
+                f"｜自动投注{('已开启' if self._rec_auto else '未开启')}｜每 10 秒自动刷新"
+            )
+        )
+        try:
+            self.notebook.tab(self.tab_rec, text=f"洲际导弹建议盯盘（{len(items)}）")
+        except Exception:
+            pass
 
     def log(self, msg):
         self.events.put(("log", f"[{now()}] {msg}"))
@@ -1992,6 +2430,18 @@ class ScannerApp(tk.Tk):
         cfg = getattr(self, "crown_src", None) or self._load_crown_source()
         return (cfg.get("backend_url") or "http://127.0.0.1:18000").strip().rstrip("/")
 
+    def _local_opener(self):
+        """本机投注引擎接口一律不走代理。
+
+        加速器会把系统代理改成 127.0.0.1:7890，走代理时连本机 18000 会被拒绝
+        （urlopen error [WinError 10061]），所以这里固定用「不用代理」的 opener。
+        """
+        opener = getattr(self, "_backend_opener", None)
+        if opener is None:
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            self._backend_opener = opener
+        return opener
+
     def _backend_login(self):
         """免密登录本机投注引擎（免密接口只允许本机访问）。"""
         url = self._backend_base() + "/api/auth/local-login"
@@ -2001,7 +2451,7 @@ class ScannerApp(tk.Tk):
             method="POST",
             headers={"Content-Type": "application/json"},
         )
-        with urllib.request.urlopen(req, timeout=20) as resp:
+        with self._local_opener().open(req, timeout=20) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         token = ((data or {}).get("data") or {}).get("token")
         if not token:
@@ -2027,7 +2477,7 @@ class ScannerApp(tk.Tk):
             },
         )
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with self._local_opener().open(req, timeout=timeout) as resp:
                 return json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as e:
             if e.code == 401 and retry:
@@ -2481,6 +2931,11 @@ class ScannerApp(tk.Tk):
                 elif kind == "crown_status":
                     if getattr(self, "collect_lbl", None) is not None:
                         self.collect_lbl.configure(text=ev[1])
+                elif kind == "recs":
+                    try:
+                        self._render_recs(ev[1] or {})
+                    except Exception as ex:
+                        self.rec_summary.configure(text=f"刷新建议面板出错：{ex}")
                 elif kind == "row":
                     r, is_new = ev[1], ev[2]
                     if is_new and not self._recent_enough(r):
