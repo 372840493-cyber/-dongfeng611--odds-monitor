@@ -189,6 +189,44 @@ class ScannerApp(tk.Tk):
             return True
         return _dt.now() < ko_dt + _td(hours=hours)
 
+    def _ou_rec(self, r):
+        """返回 (建议, 建议时的盘口线): 买小球 / 买大球 / 不买。"""
+        adv = self._ou_advice(r)
+        if not adv:
+            return "", None
+        if adv["buy_small"]:
+            return "买小球", r.get("cur_line")
+        if adv["buy_big"]:
+            return "买大球", r.get("cur_line")
+        return "不买", r.get("cur_line")
+
+    def _baseline_stats(self):
+        """全部样本的基础命中率(用于判断信号有没有优势)。"""
+        big = small = 0
+        for x in self.ou_stats:
+            rp = x.get("result_vs_pin")
+            if rp == "大":
+                big += 1
+            elif rp == "小":
+                small += 1
+        dec = (big + small) or 1
+        return {"big": big, "small": small, "big_rate": big / dec, "small_rate": small / dec}
+
+    def _ou_rec_track(self):
+        """已发出的"买小球/买大球"建议的实际战绩。"""
+        ok = bad = push = 0
+        for x in self.ou_stats:
+            if x.get("rec") not in ("买小球", "买大球"):
+                continue
+            r = x.get("rec_result")
+            if r == "✔":
+                ok += 1
+            elif r == "✘":
+                bad += 1
+            elif r == "走盘":
+                push += 1
+        return {"n": ok + bad + push, "ok": ok, "bad": bad, "push": push}
+
     def _upwater_stats(self):
         """累计样本里"升盘+升水"的命中情况, 返回 (场数, 小球数)。"""
         n = 0
@@ -266,41 +304,69 @@ class ScannerApp(tk.Tk):
         }
 
     def _ou_advice_text(self, r):
-        """15分钟复查用的大小球建议文字(没有数据则返回空串)。"""
+        """15分钟复查用的大小球建议(带样本量/基准对比, 优势小就不喊买)。"""
         adv = self._ou_advice(r)
         if not adv:
             return ""
+        base = self._baseline_stats()
         st_small = self._pattern_stats("升盘阻大")
         st_big = self._pattern_stats("诱大")
+        track = self._ou_rec_track()
         txt = (
             f"\n大小球(平博): 初盘 {adv['open_txt']} → 即时 {adv['cur_txt']}\n"
             f"大小球动作: {adv['act']}\n"
         )
+
+        def _rate(st, side):
+            win = st["pin_small"] if side == "小" else st["pin_big"]
+            lose = st["pin_big"] if side == "小" else st["pin_small"]
+            dec = (win + lose) or 1
+            return win, dec, win / dec
+
         if adv["buy_small"]:
-            s = st_small
-            dec = (s["pin_big"] + s["pin_small"]) or 1
+            win, dec, rate = _rate(st_small, "小")
+            base_rate = base["small_rate"]
+            edge = (rate - base_rate) * 100
             txt += (
-                f"大小球建议: 【买小球 {adv['line_txt']}】"
-                f"（历史升盘+升水 {s['n']} 场: 走小 {s['pin_small']} 场 "
-                f"{s['pin_small']/dec*100:.0f}%, ≥3球 {s['ge3']/s['n']*100:.0f}%）\n"
-                if s["n"] else
-                f"大小球建议: 【买小球 {adv['line_txt']}】（历史样本不足）\n"
+                f"同类样本: 升盘+大升水 {st_small['n']} 场, 走小 {win}/{dec} "
+                f"({rate*100:.0f}%) | 全部比赛基准 {base_rate*100:.0f}% | "
+                f"优势 {edge:+.0f} 点\n"
             )
+            if st_small["n"] < 20:
+                txt += f"大小球建议: 参考小球 {adv['line_txt']}（样本不足 {st_small['n']} 场, 慎用）\n"
+            elif edge >= 10:
+                txt += f"大小球建议: 【买小球 {adv['line_txt']}】（信号明确, 优势 {edge:+.0f} 点）\n"
+            elif edge >= 5:
+                txt += f"大小球建议: 【参考小球 {adv['line_txt']}·轻仓】（优势一般 {edge:+.0f} 点）\n"
+            else:
+                txt += f"大小球建议: 不建议下注（优势太小 {edge:+.0f} 点, 跟买大买小差不多）\n"
         elif adv["buy_big"]:
-            b = st_big
-            dec = (b["pin_big"] + b["pin_small"]) or 1
+            win, dec, rate = _rate(st_big, "大")
+            base_rate = base["big_rate"]
+            edge = (rate - base_rate) * 100
             txt += (
-                f"大小球建议: 【买大球 {adv['line_txt']}】"
-                f"（历史降盘+大降水 {b['n']} 场: 对盘口走大 {b['pin_big']} 场 "
-                f"{b['pin_big']/dec*100:.0f}%, ≥3球 {b['ge3']/b['n']*100:.0f}%）\n"
-                if b["n"] else
-                f"大小球建议: 【买大球 {adv['line_txt']}】（历史样本不足）\n"
+                f"同类样本: 降盘+大降水 {st_big['n']} 场, 走大 {win}/{dec} "
+                f"({rate*100:.0f}%) | 全部比赛基准 {base_rate*100:.0f}% | "
+                f"优势 {edge:+.0f} 点\n"
             )
+            if st_big["n"] < 20:
+                txt += f"大小球建议: 参考大球 {adv['line_txt']}（样本不足 {st_big['n']} 场, 慎用）\n"
+            elif edge >= 10:
+                txt += f"大小球建议: 【买大球 {adv['line_txt']}】（信号明确, 优势 {edge:+.0f} 点）\n"
+            elif edge >= 5:
+                txt += f"大小球建议: 【参考大球 {adv['line_txt']}·轻仓】（优势一般 {edge:+.0f} 点）\n"
+            else:
+                txt += f"大小球建议: 不建议下注（优势太小 {edge:+.0f} 点, 跟买大买小差不多）\n"
         else:
             txt += (
-                "大小球建议: 不买（当前不是「升盘+升水」也不是「降盘+大降水」；"
-                f"参考: 升盘+升水 {st_small['n']} 场走小 {st_small['pin_small']} 场, "
-                f"降盘+大降水 {st_big['n']} 场走大 {st_big['pin_big']} 场）\n"
+                "大小球建议: 不买（当前不是「升盘+大升水」也不是「降盘+大降水」）\n"
+                f"参考: 升盘+大升水 {st_small['n']} 场, 降盘+大降水 {st_big['n']} 场\n"
+            )
+        if track["n"]:
+            dec2 = (track["ok"] + track["bad"]) or 1
+            txt += (
+                f"本机临场推荐战绩: {track['n']} 场, 对 {track['ok']} 错 {track['bad']} "
+                f"走 {track['push']} ({track['ok']/dec2*100:.0f}%)\n"
             )
         return txt
 
@@ -1347,6 +1413,9 @@ class ScannerApp(tk.Tk):
                         "c2_cur_line"
                     )
                     self.live_info.setdefault(sid, {})["t15_sig"] = sc.ou_signal(r)
+                    _rec, _rec_line = self._ou_rec(r)
+                    self.live_info.setdefault(sid, {})["t15_rec"] = _rec
+                    self.live_info.setdefault(sid, {})["t15_rec_line"] = _rec_line
                     cur_tend = sc.betting_reference(r)
 
                     def _norm(x):
@@ -1503,6 +1572,14 @@ class ScannerApp(tk.Tk):
                         if pf:
                             r["platform"] = pf
                         self.events.put(("row", r, False))
+                        # 无论有没有倾向, 15分钟这一刻的数据都记下来(以后统计才有样本)
+                        _li = self.live_info.setdefault(sid, {})
+                        _li["t15_pin"] = r.get("cur_line")
+                        _li["t15_crown"] = r.get("c2_cur_line")
+                        _li["t15_sig"] = sc.ou_signal(r)
+                        _rec, _rec_line = self._ou_rec(r)
+                        _li["t15_rec"] = _rec
+                        _li["t15_rec_line"] = _rec_line
                         # 没有原始倾向的场次: 只要15分钟时是"升盘+升水"也发大小球建议
                         if not info.get("snapshot"):
                             _adv = self._ou_advice(r)
@@ -1815,6 +1892,22 @@ class ScannerApp(tk.Tk):
         if not (b_t15 or b_lock or b_last):
             return
         main = b_t15 or b_lock or b_last
+        # 临场大小球建议的对错(按下注时的盘口线判)
+        _rec = info.get("t15_rec") or ""
+        _rec_line = info.get("t15_rec_line")
+        _rec_res = ""
+        if _rec in ("买小球", "买大球") and _rec_line is not None:
+            try:
+                _rl = float(_rec_line)
+            except (TypeError, ValueError):
+                _rl = None
+            if _rl is not None:
+                if total > _rl + 1e-9:
+                    _rec_res = "✔" if _rec == "买大球" else "✘"
+                elif total < _rl - 1e-9:
+                    _rec_res = "✔" if _rec == "买小球" else "✘"
+                else:
+                    _rec_res = "走盘"
         self.ou_stats.append(
             {
                 "sid": sid,
@@ -1834,6 +1927,9 @@ class ScannerApp(tk.Tk):
                 "last": b_last,
                 "sig_t15": info.get("t15_sig"),
                 "sig_lock": row.get("lock_sig") or row.get("lock2_sig"),
+                "rec": info.get("t15_rec"),
+                "rec_line": info.get("t15_rec_line"),
+                "rec_result": _rec_res,
             }
         )
         self.ou_recorded.add(sid)
@@ -1917,6 +2013,15 @@ class ScannerApp(tk.Tk):
                 f"  {label_txt}: {n} 场 | 对盘口 大{w}({wp:.0f}%) 小{l}({lp:.0f}%) 走{p} | "
                 f"≥3球 {big}({pct3:.0f}%)"
             )
+        _tr = self._ou_rec_track()
+        if _tr["n"]:
+            _dec = (_tr["ok"] + _tr["bad"]) or 1
+            lines.append(
+                f"【临场大小球推荐战绩】{_tr['n']} 场 | 对 {_tr['ok']} 错 {_tr['bad']} "
+                f"走 {_tr['push']} | 命中 {_tr['ok']/_dec*100:.0f}%"
+            )
+        else:
+            lines.append("【临场大小球推荐战绩】暂无样本（从现在起自动累计）")
         lines.append("")
         lines.append("最近 20 场明细:")
         for rec in self.ou_stats[-20:]:
