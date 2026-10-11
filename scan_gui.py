@@ -201,14 +201,10 @@ class ScannerApp(tk.Tk):
         return "不买", r.get("cur_line")
 
     # 青年队/女足/友谊赛/杯赛这类比赛进球随机性大, 信号实测命中率只有 50%
-    NOISY_KEYS = (
-        "U19", "U21", "U23", "U20", "U17", "U16", "女", "友谊", "杯",
-        "青", "预备", "B队", "II队", "后备",
-    )
+    NOISY_KEYS = sc.NOISY_LEAGUE_KEYS
 
     def _is_noisy_league(self, name):
-        name = str(name or "")
-        return any(k in name for k in self.NOISY_KEYS)
+        return sc.is_noisy_league(name)
 
     def _baseline_stats(self, clean=True):
         """基础命中率(clean=True 时只算正常联赛, 与推荐口径一致)。"""
@@ -331,18 +327,8 @@ class ScannerApp(tk.Tk):
             f"大小球动作: {adv['act']}\n"
         )
         if self._is_noisy_league(r.get("league")):
-            txt += (
-                "大小球建议: 不推荐（青年队/女足/友谊赛/杯赛）\n"
-                "  原因: 这类比赛历史上同类信号命中率只有约 50%，等于随机\n"
-            )
-            if track["n"]:
-                _d2 = (track["ok"] + track["bad"]) or 1
-                txt += (
-                    f"本机临场推荐战绩: {track['n']} 场, 对 {track['ok']} "
-                    f"错 {track['bad']} 走 {track['push']} "
-                    f"({track['ok']/_d2*100:.0f}%)\n"
-                )
-            return txt
+            # 青年队/女足/友谊/杯赛: 不做大小球推荐(实测命中率约 50%, 等于随机)
+            return ""
 
         def _rate(st, side):
             win = st["pin_small"] if side == "小" else st["pin_big"]
@@ -1449,6 +1435,8 @@ class ScannerApp(tk.Tk):
                     )
                     self.live_info.setdefault(sid, {})["t15_sig"] = sc.ou_signal(r)
                     _rec, _rec_line = self._ou_rec(r)
+                    if self._is_noisy_league(r.get("league")):
+                        _rec = "不买"
                     self.live_info.setdefault(sid, {})["t15_rec"] = _rec
                     self.live_info.setdefault(sid, {})["t15_rec_line"] = _rec_line
                     cur_tend = sc.betting_reference(r)
@@ -1613,13 +1601,24 @@ class ScannerApp(tk.Tk):
                         _li["t15_crown"] = r.get("c2_cur_line")
                         _li["t15_sig"] = sc.ou_signal(r)
                         _rec, _rec_line = self._ou_rec(r)
+                        if self._is_noisy_league(r.get("league")):
+                            _rec = "不买"
                         _li["t15_rec"] = _rec
                         _li["t15_rec_line"] = _rec_line
                         # 没有原始倾向的场次: 只要15分钟时是"升盘+升水"也发大小球建议
                         if not info.get("snapshot"):
                             _adv = self._ou_advice(r)
                             _advtxt = self._ou_advice_text(r)
-                            if _adv and (_adv.get("buy_small") or _adv.get("buy_big")) and _advtxt:
+                            if self._is_noisy_league(info.get("league")) and _adv:
+                                self.events.put(
+                                    (
+                                        "log",
+                                        "跳过大小球推荐(青年队/女足/友谊/杯赛): "
+                                        f"{info.get('league', '')} "
+                                        f"{info.get('home', '')} vs {info.get('away', '')}",
+                                    )
+                                )
+                            elif _adv and (_adv.get("buy_small") or _adv.get("buy_big")) and _advtxt:
                                 _subj = (
                                     f"大小球建议({PREMATCH_MIN}分钟): {info.get('league', '')} "
                                     f"{info.get('home', '')} vs {info.get('away', '')}"
@@ -2018,6 +2017,7 @@ class ScannerApp(tk.Tk):
             lines.append("")
         lines.append(
             "【专项】口径: 对盘口=按平博当时盘口线; ≥3球=固定 2.5 球线"
+            " | 已排除青年队/女足/友谊/杯赛"
         )
         for label_txt, kw in (
             ("升盘+大升水(看小)", "升盘阻大"),
@@ -2027,6 +2027,8 @@ class ScannerApp(tk.Tk):
             for rec in self.ou_stats:
                 sig = (rec.get("sig_t15") or rec.get("sig_lock") or "")
                 if kw not in sig:
+                    continue
+                if self._is_noisy_league(rec.get("league")):
                     continue
                 n += 1
                 if rec.get("big25") == "大":

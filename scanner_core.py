@@ -311,8 +311,22 @@ def layer2_text(r):
     return " ｜ ".join(parts)
 
 
+NOISY_LEAGUE_KEYS = (
+    "U19", "U21", "U23", "U20", "U17", "U16", "女", "友谊", "杯",
+    "青", "预备", "B队", "II队", "后备",
+)
+
+
+def is_noisy_league(name):
+    """青年队/女足/友谊赛/杯赛: 实测同类信号命中率仅约 50%, 一律不推荐。"""
+    name = str(name or "")
+    return any(k in name for k in NOISY_LEAGUE_KEYS)
+
+
 def betting_reference(r):
     """Layer-3 reference conclusion (no odds-value filter yet)."""
+    if is_noisy_league(r.get("league")):
+        return "不建议下注（非正常联赛）"
     buys = []
     s = size_score(r)
     pin_side = _side(r.get("open_line"), r.get("cur_line"))
