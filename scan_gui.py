@@ -200,10 +200,22 @@ class ScannerApp(tk.Tk):
             return "买大球", r.get("cur_line")
         return "不买", r.get("cur_line")
 
-    def _baseline_stats(self):
-        """全部样本的基础命中率(用于判断信号有没有优势)。"""
+    # 青年队/女足/友谊赛/杯赛这类比赛进球随机性大, 信号实测命中率只有 50%
+    NOISY_KEYS = (
+        "U19", "U21", "U23", "U20", "U17", "U16", "女", "友谊", "杯",
+        "青", "预备", "B队", "II队", "后备",
+    )
+
+    def _is_noisy_league(self, name):
+        name = str(name or "")
+        return any(k in name for k in self.NOISY_KEYS)
+
+    def _baseline_stats(self, clean=True):
+        """基础命中率(clean=True 时只算正常联赛, 与推荐口径一致)。"""
         big = small = 0
         for x in self.ou_stats:
+            if clean and self._is_noisy_league(x.get("league")):
+                continue
             rp = x.get("result_vs_pin")
             if rp == "大":
                 big += 1
@@ -278,12 +290,14 @@ class ScannerApp(tk.Tk):
             "line_txt": sc.fmt_line(c_line) if c_line is not None else "-",
         }
 
-    def _pattern_stats(self, kw):
-        """按软件'对比统计'同样口径统计某类动作: 返回 dict。"""
+    def _pattern_stats(self, kw, clean=True):
+        """统计某类动作的战绩(clean=True 只算正常联赛)。"""
         n = pin_big = pin_small = push = ge3 = 0
         for rec in self.ou_stats:
             sig = (rec.get("sig_t15") or rec.get("sig_lock") or "")
             if kw not in sig:
+                continue
+            if clean and self._is_noisy_league(rec.get("league")):
                 continue
             n += 1
             rp = rec.get("result_vs_pin")
@@ -308,14 +322,27 @@ class ScannerApp(tk.Tk):
         adv = self._ou_advice(r)
         if not adv:
             return ""
-        base = self._baseline_stats()
-        st_small = self._pattern_stats("升盘阻大")
-        st_big = self._pattern_stats("诱大")
+        base = self._baseline_stats(clean=True)
+        st_small = self._pattern_stats("升盘阻大", clean=True)
+        st_big = self._pattern_stats("诱大", clean=True)
         track = self._ou_rec_track()
         txt = (
             f"\n大小球(平博): 初盘 {adv['open_txt']} → 即时 {adv['cur_txt']}\n"
             f"大小球动作: {adv['act']}\n"
         )
+        if self._is_noisy_league(r.get("league")):
+            txt += (
+                "大小球建议: 不推荐（青年队/女足/友谊赛/杯赛）\n"
+                "  原因: 这类比赛历史上同类信号命中率只有约 50%，等于随机\n"
+            )
+            if track["n"]:
+                _d2 = (track["ok"] + track["bad"]) or 1
+                txt += (
+                    f"本机临场推荐战绩: {track['n']} 场, 对 {track['ok']} "
+                    f"错 {track['bad']} 走 {track['push']} "
+                    f"({track['ok']/_d2*100:.0f}%)\n"
+                )
+            return txt
 
         def _rate(st, side):
             win = st["pin_small"] if side == "小" else st["pin_big"]
@@ -329,11 +356,15 @@ class ScannerApp(tk.Tk):
             edge = (rate - base_rate) * 100
             txt += (
                 f"同类样本: 升盘+大升水 {st_small['n']} 场, 走小 {win}/{dec} "
-                f"({rate*100:.0f}%) | 全部比赛基准 {base_rate*100:.0f}% | "
-                f"优势 {edge:+.0f} 点\n"
+                f"({rate*100:.0f}%) | 正常联赛基准 {base_rate*100:.0f}% | "
+                f"优势 {edge:+.0f} 点（已排除青年队/杯赛/友谊）\n"
             )
-            if st_small["n"] < 20:
-                txt += f"大小球建议: 参考小球 {adv['line_txt']}（样本不足 {st_small['n']} 场, 慎用）\n"
+            if st_small["n"] < 20 or edge < 5:
+                txt += (
+                    f"大小球建议: 不建议下注（"
+                    + (f"样本仅 {st_small['n']} 场，还不足以下结论" if st_small["n"] < 20 else f"优势太小 {edge:+.0f} 点")
+                    + "）\n"
+                )
             elif edge >= 10:
                 txt += f"大小球建议: 【买小球 {adv['line_txt']}】（信号明确, 优势 {edge:+.0f} 点）\n"
             elif edge >= 5:
@@ -346,11 +377,15 @@ class ScannerApp(tk.Tk):
             edge = (rate - base_rate) * 100
             txt += (
                 f"同类样本: 降盘+大降水 {st_big['n']} 场, 走大 {win}/{dec} "
-                f"({rate*100:.0f}%) | 全部比赛基准 {base_rate*100:.0f}% | "
-                f"优势 {edge:+.0f} 点\n"
+                f"({rate*100:.0f}%) | 正常联赛基准 {base_rate*100:.0f}% | "
+                f"优势 {edge:+.0f} 点（已排除青年队/杯赛/友谊）\n"
             )
-            if st_big["n"] < 20:
-                txt += f"大小球建议: 参考大球 {adv['line_txt']}（样本不足 {st_big['n']} 场, 慎用）\n"
+            if st_big["n"] < 20 or edge < 5:
+                txt += (
+                    f"大小球建议: 不建议下注（"
+                    + (f"样本仅 {st_big['n']} 场，还不足以下结论" if st_big["n"] < 20 else f"优势太小 {edge:+.0f} 点")
+                    + "）\n"
+                )
             elif edge >= 10:
                 txt += f"大小球建议: 【买大球 {adv['line_txt']}】（信号明确, 优势 {edge:+.0f} 点）\n"
             elif edge >= 5:
