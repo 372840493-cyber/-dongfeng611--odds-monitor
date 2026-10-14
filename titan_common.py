@@ -93,10 +93,11 @@ _PROXY_CFG = {
     "prefer": False,
     "user": "",
     "pass": "",
+    "api_url": "",
 }
 
 
-def set_proxy(host=None, port=None, enabled=True, prefer=False, user=None, password=None):
+def set_proxy(host=None, port=None, enabled=True, prefer=False, user=None, password=None, api_url=None):
     if host:
         _PROXY_CFG["host"] = str(host).strip()
     try:
@@ -109,6 +110,10 @@ def set_proxy(host=None, port=None, enabled=True, prefer=False, user=None, passw
         _PROXY_CFG["user"] = str(user).strip()
     if password is not None:
         _PROXY_CFG["pass"] = str(password)
+    if api_url is not None:
+        _PROXY_CFG["api_url"] = str(api_url).strip()
+        _API_POOL["list"] = []
+        _API_POOL["idx"] = 0
     _PROXY_CFG["enabled"] = bool(enabled)
     _PROXY_CFG["prefer"] = bool(prefer)
 
@@ -128,7 +133,55 @@ def _proxy_http(host, port):
 
 
 def proxy_url():
+    if _PROXY_CFG.get("api_url") and _API_POOL["list"]:
+        return "http://" + _API_POOL["list"][_API_POOL["idx"] % len(_API_POOL["list"])]
     return _proxy_http(_PROXY_CFG["host"], _PROXY_CFG["port"])
+_API_POOL = {"list": [], "idx": 0, "fetched_at": 0.0}
+_API_LOCK = threading.Lock()
+
+
+def fetch_api_pool(timeout=8):
+    """从「代理API地址」取一批 ip:port（shenlong 这类池子），返回拿到的条数。"""
+    url = str(_PROXY_CFG.get("api_url") or "").strip()
+    if not url:
+        return 0
+    try:
+        req = urllib.request.Request(url, headers=UA)
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(req, timeout=timeout) as resp:
+            text = resp.read().decode("utf-8", "ignore")
+    except Exception:
+        return 0
+    items = []
+    for line in text.replace("\r", "\n").split("\n"):
+        for token in line.replace(",", " ").split():
+            token = token.strip()
+            m = re.match(r"^(\d{1,3}(?:\.\d{1,3}){3}):(\d{1,5})$", token)
+            if m:
+                entry = "%s:%s" % (m.group(1), m.group(2))
+                if entry not in items:
+                    items.append(entry)
+    if not items:
+        return 0
+    with _API_LOCK:
+        _API_POOL["list"] = items
+        _API_POOL["idx"] = 0
+        _API_POOL["fetched_at"] = time.time()
+    return len(items)
+
+
+def rotate_api_proxy():
+    """当前代理失败时换池子里的下一个；一批用完就重新调接口换新的一批。"""
+    if not _PROXY_CFG.get("api_url"):
+        return None
+    with _API_LOCK:
+        if _API_POOL["list"]:
+            _API_POOL["idx"] += 1
+            if _API_POOL["idx"] < len(_API_POOL["list"]):
+                return _API_POOL["list"][_API_POOL["idx"]]
+    fetch_api_pool()
+    with _API_LOCK:
+        return _API_POOL["list"][_API_POOL["idx"]] if _API_POOL["list"] else None
 
 
 def _is_remote_proxy():
@@ -184,28 +237,45 @@ def _cffi_fetch(url, timeout=25, proxy=None):
     return _decode(r.content)
 
 
-def _curl_fetch(url, timeout=25, proxy=None):
-    args = [
-        _CURL,
-        "-sS",
-        "--max-time",
-        str(int(timeout)),
-        "-A",
-        UA["User-Agent"],
-        "-H",
-        "Accept-Language: zh-CN,zh;q=0.9",
-        "-H",
-        "Referer: https://www.titan007.com/",
-        "-w",
-        "\n__HTTP__%{http_code}",
-    ]
-    if proxy:
-        args += ["-x", proxy]
-    args.append(url)
+def _curl_fetch(url, timeout=25, proxy=None, resolve_ip=None):
+    def build_args(ip):
+        args = [
+            _CURL,
+            "-sS",
+            "--max-time",
+            str(int(timeout)),
+            "-A",
+            UA["User-Agent"],
+            "-H",
+            "Accept-Language: zh-CN,zh;q=0.9",
+            "-H",
+            "Referer: https://www.titan007.com/",
+            "-w",
+            "\n__HTTP__%{http_code}",
+        ]
+        if proxy:
+            args += ["-x", proxy]
+        if ip:
+            port = 443 if url.lower().startswith("https") else 80
+            args += ["--resolve", "%s:%d:%s" % (_netloc(url), port, ip)]
+        args.append(url)
+        return args
+
     r = subprocess.run(
-        args, capture_output=True, timeout=int(timeout) + 5,
+        build_args(resolve_ip), capture_output=True, timeout=int(timeout) + 5,
         creationflags=_NO_WINDOW,
     )
+    if r.returncode != 0 and resolve_ip is None:
+        # 加速器(全局/TUN)会把系统 DNS 接管，getaddrinfo 直接失败。
+        # 这时用阿里/腾讯的公共 DNS(DoH) 自己解析出 IP，再用 --resolve 直连。
+        err_text = (r.stderr or b"").decode("utf-8", "ignore").lower()
+        if any(k in err_text for k in ("resolve", "getaddrinfo", "11004", "could not resolve")):
+            ip = _doh_resolve(_netloc(url))
+            if ip:
+                r = subprocess.run(
+                    build_args(ip), capture_output=True, timeout=int(timeout) + 5,
+                    creationflags=_NO_WINDOW,
+                )
     if r.returncode != 0:
         raise RuntimeError(f"curl exit {r.returncode}: {r.stderr[:120]!r}")
     out = r.stdout
@@ -240,6 +310,8 @@ def _mark_host_fail(host):
     limit = 6 if _is_remote_proxy() else 5
     if n >= limit:
         _DEAD_HOSTS[host] = time.time() + _DEAD_COOLDOWN
+        if _PROXY_CFG.get("api_url"):
+            rotate_api_proxy()
 
 
 def _clear_host_fail(host):
@@ -278,10 +350,50 @@ def _is_dns_error(e):
     return any(k in msg for k in ("getaddrinfo", "11004", "name or service", "nodename"))
 
 
+_DOH_SERVERS = ("223.5.5.5", "119.29.29.29")
+
+
+def _doh_resolve(host, timeout=6):
+    """用阿里/腾讯的公共 DNS(DoH, 直接连 IP 不需要 DNS) 解析域名。
+
+    加速器开全局/TUN 时会把系统 DNS 接管，getaddrinfo 失败；这里绕开系统 DNS 自己解。
+    """
+    name = (host or "").strip()
+    if not name:
+        return None
+    for server in _DOH_SERVERS:
+        try:
+            url = "https://%s/resolve?name=%s&type=A" % (server, name)
+            req = urllib.request.Request(url, headers=UA)
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            with opener.open(req, timeout=timeout) as resp:
+                data = json.loads(resp.read().decode("utf-8", "ignore"))
+            for item in (data.get("Answer") or []):
+                if item.get("type") == 1 and item.get("data"):
+                    return str(item["data"]).strip()
+        except Exception:
+            continue
+    return None
+
+
 def clear_dead_hosts():
     """清掉"通道不通"的短期标记(用户重新扫描/换代理后调用)。"""
     _DEAD_HOSTS.clear()
     _HOST_FAILS.clear()
+
+
+def probe_channel(timeout=10):
+    """轻量探测：现在能不能拉到盘口数据（用于「通道掉了就等它恢复」）。
+
+    走的是软件自己的代理设置（有代理走代理、没有就直连），和正式拉盘同一条路。
+    """
+    for url in ("https://m.titan007.com/txt/basid.js", "https://www.titan007.com/"):
+        try:
+            fetch_text(url, timeout=timeout)
+            return True
+        except Exception:
+            continue
+    return False
 
 
 def _is_conn_error(e):
@@ -308,7 +420,8 @@ def _one_fetch(url, timeout=25, proxy=None):
             return _cffi_fetch(url, timeout, proxy)
         except Exception as e:
             errs.append(e)
-            if _is_conn_error(e):
+            # 域名解析失败不要直接放弃：交给下一条路(curl)去做 DoH 解析后重试
+            if _is_conn_error(e) and not _is_dns_error(e):
                 raise
     if _CURL:
         try:
@@ -336,8 +449,10 @@ def fetch_text(url, timeout=25):
     proxy_ready = bool(_PROXY_CFG.get("enabled")) and _proxy_alive()
     if not proxy_ready:
         if host in _PROXY_FIRST_HOSTS:
-            # 这个域名直连不通(本地被挡), 缩短超时, 别把整轮拖成几分钟
-            timeout = min(timeout, 8)
+            # 这个域名直连不通(本地被挡)，缩短一点超时，但别太短：
+            # 加速器/代理慢的时候 8 秒会把已经下了十几 KB 的请求掐断（日志里的
+            # "timed out with 16366 bytes received" 就是这种情况）。
+            timeout = min(timeout, 20)
         try:
             out = _one_fetch(url, timeout, None)
             _clear_host_fail(host)

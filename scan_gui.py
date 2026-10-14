@@ -91,6 +91,8 @@ class ScannerApp(tk.Tk):
         self._digest_reason = ""
         self._proxy_retry = True
         self._round_abort = threading.Event()
+        # 断点续传：上一轮没拉到的场次，下一轮优先补拉
+        self._pending_sids = []
         self.live_meta = {}
         self.live_info = {}
         self._rechecked = set()
@@ -200,7 +202,7 @@ class ScannerApp(tk.Tk):
             return "买大球", r.get("cur_line")
         return "不买", r.get("cur_line")
 
-    # 青年队/女足/友谊赛/杯赛这类比赛进球随机性大, 信号实测命中率只有 50%
+    # 青年队/女足/友谊赛这类比赛进球随机性大, 信号实测命中率只有 50%
     NOISY_KEYS = sc.NOISY_LEAGUE_KEYS
 
     def _is_noisy_league(self, name):
@@ -327,7 +329,7 @@ class ScannerApp(tk.Tk):
             f"大小球动作: {adv['act']}\n"
         )
         if self._is_noisy_league(r.get("league")):
-            # 青年队/女足/友谊/杯赛: 不做大小球推荐(实测命中率约 50%, 等于随机)
+            # 青年队/女足/友谊赛: 不做大小球推荐(实测命中率约 50%, 等于随机)
             return ""
 
         def _rate(st, side):
@@ -343,7 +345,7 @@ class ScannerApp(tk.Tk):
             txt += (
                 f"同类样本: 升盘+大升水 {st_small['n']} 场, 走小 {win}/{dec} "
                 f"({rate*100:.0f}%) | 正常联赛基准 {base_rate*100:.0f}% | "
-                f"优势 {edge:+.0f} 点（已排除青年队/杯赛/友谊）\n"
+                f"优势 {edge:+.0f} 点（已排除青年队/女足/友谊赛）\n"
             )
             if st_small["n"] < 20 or edge < 5:
                 txt += (
@@ -364,7 +366,7 @@ class ScannerApp(tk.Tk):
             txt += (
                 f"同类样本: 降盘+大降水 {st_big['n']} 场, 走大 {win}/{dec} "
                 f"({rate*100:.0f}%) | 正常联赛基准 {base_rate*100:.0f}% | "
-                f"优势 {edge:+.0f} 点（已排除青年队/杯赛/友谊）\n"
+                f"优势 {edge:+.0f} 点（已排除青年队/女足/友谊赛）\n"
             )
             if st_big["n"] < 20 or edge < 5:
                 txt += (
@@ -496,7 +498,7 @@ class ScannerApp(tk.Tk):
         self.e_cid.pack(side="left", padx=(2, 10))
         ttk.Label(cfg, text="轮询间隔(秒):").pack(side="left")
         self.e_int = ttk.Entry(cfg, width=7)
-        self.e_int.insert(0, "60")
+        self.e_int.insert(0, str(self._load_poll_interval()))
         self.e_int.pack(side="left", padx=(2, 10))
         ttk.Label(cfg, text="并发:").pack(side="left")
         self.e_workers = ttk.Entry(cfg, width=5)
@@ -1075,6 +1077,7 @@ class ScannerApp(tk.Tk):
             thr = float(self.e_thr.get())
             cid = int(self.e_cid.get())
             interval = int(self.e_int.get())
+            self._save_poll_interval(interval)
             workers = int(self.e_workers.get())
         except ValueError:
             messagebox.showerror("参数错误", "阈值/公司ID/间隔/并发必须是数字")
@@ -1143,19 +1146,7 @@ class ScannerApp(tk.Tk):
         while self.running:
             t0 = time.time()
             self._round_abort.clear()
-            if self._proxy_retry:
-                self._proxy_retry = False
-                try:
-                    port = t.auto_proxy(save_path=self._proxy_cfg_path())
-                except Exception as e:
-                    port = None
-                    self.events.put(("log", f"代理自动识别出错: {e}"))
-                self.events.put(
-                    (
-                        "log",
-                        f"代理自动识别: {'端口 ' + str(port) if port else '未找到可用代理，走直连'}",
-                    )
-                )
+            # 不自动探测代理：代理开关以「代理设置」里用户填的为准（开加速器就直连，填了代理就走代理）
             try:
                 matches = t.fetch_home_matches()
             except Exception as e:
@@ -1183,6 +1174,12 @@ class ScannerApp(tk.Tk):
                         )
                     )
             self.events.put(("log", f"本轮 {len(matches)} 场，开始拉盘…"))
+            if self._pending_sids:
+                _pend = set(self._pending_sids)
+                matches.sort(key=lambda m: 0 if str(m.get("sid")) in _pend else 1)
+                self.events.put(
+                    ("log", f"断点续传：优先补拉上轮没拉到的 {len(_pend)} 场")
+                )
             total = len(matches)
             counters = {"ok": 0, "err": 0, "q": 0, "new": 0, "done": 0}
             results = []
@@ -1207,6 +1204,9 @@ class ScannerApp(tk.Tk):
                         and counters["err"] >= self._round_abort_after
                         and not self._round_abort.is_set()
                     ):
+                        self._pending_sids = [
+                            str(m.get("sid")) for m in matches[counters["done"]:]
+                        ]
                         self._round_abort.set()
                         self.events.put(
                             (
@@ -1397,6 +1397,7 @@ class ScannerApp(tk.Tk):
                         self._last_live[sid] = (score, "")
                         self.events.put(("live", sid, score, ""))
             # 已锁定的场次: 开赛前20分钟发临场提醒(原始倾向+当前盘口+大小球建议)
+            now2 = datetime.now()
             for sid, info in list(self.live_info.items()):
                 snap = info.get("snapshot")
                 if not snap or sid in self._prematch_notified:
@@ -1613,7 +1614,7 @@ class ScannerApp(tk.Tk):
                                 self.events.put(
                                     (
                                         "log",
-                                        "跳过大小球推荐(青年队/女足/友谊/杯赛): "
+                                        "跳过大小球推荐(青年队/女足/友谊赛): "
                                         f"{info.get('league', '')} "
                                         f"{info.get('home', '')} vs {info.get('away', '')}",
                                     )
@@ -2017,7 +2018,7 @@ class ScannerApp(tk.Tk):
             lines.append("")
         lines.append(
             "【专项】口径: 对盘口=按平博当时盘口线; ≥3球=固定 2.5 球线"
-            " | 已排除青年队/女足/友谊/杯赛"
+            " | 已排除青年队/女足/友谊赛"
         )
         for label_txt, kw in (
             ("升盘+大升水(看小)", "升盘阻大"),
@@ -2493,6 +2494,36 @@ class ScannerApp(tk.Tk):
 
     def _app_settings_path(self):
         return os.path.join(app_dir(), "app_settings.json")
+    def _load_poll_interval(self):
+        """读取上次保存的轮询间隔（秒），默认 60。"""
+        p = self._app_settings_path()
+        if os.path.exists(p):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                value = int(data.get("poll_interval") or 0)
+                if 5 <= value <= 3600:
+                    return value
+            except Exception:
+                pass
+        return 60
+
+    def _save_poll_interval(self, value):
+        """把轮询间隔写进 app_settings.json（保留其它设置），下次打开自动带出来。"""
+        p = self._app_settings_path()
+        data = {}
+        if os.path.exists(p):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    data = json.load(f) or {}
+            except Exception:
+                data = {}
+        try:
+            data["poll_interval"] = int(value)
+            with open(p, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False)
+        except Exception as e:
+            self._append_log(f"轮询间隔保存失败: {e}")
 
     def _load_all_leagues(self):
         p = self._app_settings_path()
