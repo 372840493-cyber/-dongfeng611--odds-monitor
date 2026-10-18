@@ -90,6 +90,7 @@ class ScannerApp(tk.Tk):
         self._digest_min_gap = 60.0
         self._digest_reason = ""
         self._proxy_retry = True
+        self._bad_rounds = 0
         self._round_abort = threading.Event()
         # 断点续传：上一轮没拉到的场次，下一轮优先补拉
         self._pending_sids = []
@@ -172,11 +173,8 @@ class ScannerApp(tk.Tk):
         self.after(200, self._poll)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.tree.bind("<Double-1>", self._on_double_click)
-        self.after(1500, self._engine_tick)
         self.after(3000, lambda: self._refresh_recs(True))
         self.after(10000, self._rec_tick)
-        if self.crown_src.get("auto_start_engine") and self.crown_src.get("enabled"):
-            self.after(2500, lambda: self._start_engine(quiet=True))
 
     def _recent_enough(self, r, hours=3.5):
         """刚被扫描到的场次是否还值得跟踪(开赛超过 hours 小时视为已完场)。"""
@@ -572,23 +570,6 @@ class ScannerApp(tk.Tk):
         self.status = ttk.Label(cfg, text="空闲", foreground="#1a6bb8")
         self.status.pack(side="right")
 
-        # 皇冠数据源(采集账号) + 投注引擎控制
-        cfg3 = ttk.Frame(self, padding=(8, 0, 8, 4))
-        cfg3.pack(fill="x")
-        ttk.Button(cfg3, text="皇冠数据源设置", command=self._open_crown_source).pack(
-            side="left", padx=(0, 6)
-        )
-        ttk.Button(
-            cfg3, text="启动投注引擎", command=lambda: self._start_engine()
-        ).pack(side="left", padx=4)
-        ttk.Button(cfg3, text="停止引擎", command=self._stop_engine).pack(
-            side="left", padx=4
-        )
-        self.engine_lbl = ttk.Label(cfg3, text="投注引擎: 检查中…", foreground="#666")
-        self.engine_lbl.pack(side="left", padx=10)
-        self.collect_lbl = ttk.Label(cfg3, text="皇冠采集: -", foreground="#666")
-        self.collect_lbl.pack(side="left", padx=10)
-
         # 两个页签：「扫描列表」和「洲际导弹建议盯盘」，点标签切换
         self.notebook = ttk.Notebook(self)
         self.notebook.pack(fill="both", expand=True, padx=6, pady=(0, 4))
@@ -624,6 +605,7 @@ class ScannerApp(tk.Tk):
         self.logtxt.pack(fill="x")
 
         self._build_recommendation_tab(self.tab_rec)
+        self.notebook.select(self.tab_scan)   # 默认打开"扫描列表"
 
     # ---------------- 洲际导弹建议盯盘面板 ----------------
     REC_COLS = [
@@ -1030,7 +1012,11 @@ class ScannerApp(tk.Tk):
 
     def _render_recs(self, payload):
         if payload.get("error"):
-            self.rec_summary.configure(text=f"读取建议失败：{payload['error']}")
+            err = str(payload["error"])
+            if any(k in err for k in ("refused", "10061", "Connection", "连接", "timed out")):
+                self.rec_summary.configure(text="投注引擎未启动（这一页需要引擎才能用）")
+            else:
+                self.rec_summary.configure(text=f"读取建议失败：{err}")
             return
         items = payload.get("items") or []
         cfg = payload.get("cfg") or {}
@@ -1277,10 +1263,24 @@ class ScannerApp(tk.Tk):
                 )
             )
             if counters["ok"] == 0 and counters["err"] >= 5:
-                # 整轮全失败: 下一轮开头重新识别代理端口
+                # 整轮全失败: 下一轮重新识别代理端口, 并逐级拉长等待
                 self._proxy_retry = True
+                self._bad_rounds = getattr(self, "_bad_rounds", 0) + 1
+            else:
+                self._bad_rounds = 0
             cost = time.time() - t0
-            self._sleep(max(5, self.interval - cost))
+            wait = max(5, self.interval - cost)
+            if getattr(self, "_bad_rounds", 0):
+                backoff = min(600, 60 * (2 ** (self._bad_rounds - 1)))
+                wait = max(wait, backoff)
+                self.events.put(
+                    (
+                        "log",
+                        f"连续 {self._bad_rounds} 轮抓不到盘口，"
+                        f"{int(backoff)} 秒后再试（球探限流时要等一等）",
+                    )
+                )
+            self._sleep(wait)
         self.events.put(("stopped", None))
 
     def _score_loop_guard(self):
@@ -1538,7 +1538,9 @@ class ScannerApp(tk.Tk):
                         f"{info.get('home', '')} vs {info.get('away', '')}"
                     )
                     cfg = self.mail_cfg
-                    if cfg.get("enabled") and all(
+                    # 大小球临场结论是「不买」就不发邮件（只写日志），避免打扰
+                    _no_bet = "不买" in (ou_txt or "")
+                    if not _no_bet and cfg.get("enabled") and all(
                         cfg.get(k) for k in ("sender", "auth", "to")
                     ):
                         threading.Thread(
@@ -1553,6 +1555,8 @@ class ScannerApp(tk.Tk):
                         f"    原始倾向: {snap}",
                         f"    复查结果: {check_txt}",
                     ]
+                    if _no_bet:
+                        _lines[0] = _lines[0].replace("已发邮件", "未发邮件（结论：不买）")
                     for _ln in (extra or "").strip().splitlines():
                         if _ln.strip():
                             _lines.append("    " + _ln.strip())
