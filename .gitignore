@@ -14,3 +14,7 @@ crown_source.json
 *.spec
 backups/
 ou_compare_stats.json
+odds_api.err.log
+odds_api.out.log
+*.log
+ou_compare_stats_*.json
