@@ -18,3 +18,6 @@ odds_api.err.log
 odds_api.out.log
 *.log
 ou_compare_stats_*.json
+build_out/
+build_tmp/
+dist/*.zip

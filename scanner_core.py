@@ -369,9 +369,15 @@ def betting_reference(r):
             prob = p_home if ah_cur >= 0 else 1.0 - p_home
             if prob >= 0.55:
                 if ah_cur >= 0:
-                    buys.append(f"倾向[亚盘] 主队 让{_ah_cn(ah_cur).lstrip('让')}")
+                    buys.append(
+                        f"倾向[亚盘] 主队 让{_ah_cn(ah_cur).lstrip('让')}"
+                        f"（客队受 +{abs(ah_cur):g}）"
+                    )
                 else:
-                    buys.append(f"倾向[亚盘] 客队 让{_ah_cn(ah_cur).lstrip('受')}")
+                    buys.append(
+                        f"倾向[亚盘] 客队 让{_ah_cn(ah_cur).lstrip('受')}"
+                        f"（主队受 +{abs(ah_cur):g}）"
+                    )
     if not buys:
         return "不建议下注"
     return " ｜ ".join(buys)
@@ -437,15 +443,15 @@ def _settle_text(text, r):
             if not m:
                 continue
             side = m.group(1)
-            term = m.group(2).strip()
+            term = m.group(2).split("（")[0].strip()
             line = t.parse_ah_line(term)
             if line is None:
                 continue
+            # 让球(h>0)/受让(h<0) 统一成"调整后净胜球 > 0"
             for leg in _split_line(abs(line)):
-                if side == "主队":
-                    wins.append(_leg_result_gt(margin, leg))
-                else:
-                    wins.append(_leg_result_gt(-margin, leg))
+                h = leg if line >= 0 else -leg
+                adj = (margin if side == "主队" else -margin) - h
+                wins.append(_leg_result_gt(adj, 0.0))
     if not wins:
         return None
     if any(w < 0 for w in wins):
