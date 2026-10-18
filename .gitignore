@@ -21,3 +21,5 @@ ou_compare_stats_*.json
 build_out/
 build_tmp/
 dist/*.zip
+build_out2/
+build_tmp2/

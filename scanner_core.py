@@ -369,15 +369,9 @@ def betting_reference(r):
             prob = p_home if ah_cur >= 0 else 1.0 - p_home
             if prob >= 0.55:
                 if ah_cur >= 0:
-                    buys.append(
-                        f"倾向[亚盘] 主队 让{_ah_cn(ah_cur).lstrip('让')}"
-                        f"（客队受 +{abs(ah_cur):g}）"
-                    )
+                    buys.append(f"倾向[亚盘] 主队 让{_ah_cn(ah_cur).lstrip('让')}")
                 else:
-                    buys.append(
-                        f"倾向[亚盘] 客队 让{_ah_cn(ah_cur).lstrip('受')}"
-                        f"（主队受 +{abs(ah_cur):g}）"
-                    )
+                    buys.append(f"倾向[亚盘] 客队 让{_ah_cn(ah_cur).lstrip('受')}")
     if not buys:
         return "不建议下注"
     return " ｜ ".join(buys)
