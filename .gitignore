@@ -23,3 +23,7 @@ build_tmp/
 dist/*.zip
 build_out2/
 build_tmp2/
+build_out3/
+build_tmp3/
+build_out*/
+build_tmp*/
