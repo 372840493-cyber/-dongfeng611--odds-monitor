@@ -291,6 +291,15 @@ def _curl_fetch(url, timeout=25, proxy=None, resolve_ip=None):
 
 
 _PROXY_FIRST_HOSTS = set()
+# 这些域名直连本来就快（比赛列表/即时比分），不要绕去代理，否则会被慢代理拖到超时
+_DIRECT_FAST_HOSTS = {
+    "www.titan007.com", "m.titan007.com", "bf.titan007.com",
+    "live.titan007.com", "data.titan007.com",
+    "1x2.titan007.com", "1x2d.titan007.com", "zq.titan007.com",
+    "www.500.com", "live.500.com", "odds.500.com",
+    "www.nowscore.com", "live.nowscore.com",
+}
+
 _HOST_FAILS = {}
 _DEAD_HOSTS = {}
 _DEAD_COOLDOWN = 30.0
@@ -462,6 +471,15 @@ def fetch_text(url, timeout=25):
                 _PROXY_FIRST_HOSTS.add(host)
                 _mark_host_fail(host)
             raise
+    if host in _DIRECT_FAST_HOSTS:
+        # 直连本来就快的域名: 先直连, 失败再走代理
+        try:
+            out = _one_fetch(url, timeout, None)
+            _clear_host_fail(host)
+            return out
+        except Exception:
+            if not _proxy_alive():
+                raise
     prefer = bool(_PROXY_CFG.get("prefer")) or host in _PROXY_FIRST_HOSTS
     if prefer and _is_remote_proxy():
         # 用的是代理IP：这些域名直连本来就被挡，失败就直接再试一次代理，
