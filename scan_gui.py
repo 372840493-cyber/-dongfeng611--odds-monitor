@@ -44,6 +44,7 @@ def now():
 
 # 临场提醒提前量(分钟)
 PREMATCH_MIN = 15
+MAIL_DISCLAIMER = "（禁止赌博行为，只提供数据参考！）"
 
 
 class ScannerApp(tk.Tk):
@@ -1531,7 +1532,7 @@ class ScannerApp(tk.Tk):
                         f"{'（补发：检查时已开赛）' if late else ''}: "
                         f"{check_txt}{extra}\n"
                         f"{ou_txt}"
-                        f"（禁止赌博行为，只提供数据参考！）\n"
+                        f"{MAIL_DISCLAIMER}\n"
                     )
                     subject = (
                         f"临场提醒({PREMATCH_MIN}分钟): {info.get('league', '')} "
@@ -1563,7 +1564,7 @@ class ScannerApp(tk.Tk):
                     for _ln in (ou_txt or "").strip().splitlines():
                         if _ln.strip():
                             _lines.append("    " + _ln.strip())
-                    _lines.append("    （禁止赌博行为，只提供数据参考！）")
+                    _lines.append(f"    {MAIL_DISCLAIMER}")
                     self.events.put(("log", "\n".join(_lines)))
                 else:
                     self.events.put(("log", f"临场提醒取数失败: {sid}"))
@@ -1634,7 +1635,7 @@ class ScannerApp(tk.Tk):
                                     f"主队: {info.get('home', '')}\n"
                                     f"客队: {info.get('away', '')}\n"
                                     f"{_advtxt}"
-                                    f"（禁止赌博行为，只提供数据参考！）\n"
+                                    f"{MAIL_DISCLAIMER}\n"
                                 )
                                 _cfg = self.mail_cfg
                                 if _cfg.get("enabled") and all(
@@ -1654,7 +1655,7 @@ class ScannerApp(tk.Tk):
                                 for _ln in (_advtxt or "").strip().splitlines():
                                     if _ln.strip():
                                         _ol.append("    " + _ln.strip())
-                                _ol.append("    （禁止赌博行为，只提供数据参考！）")
+                                _ol.append(f"    {MAIL_DISCLAIMER}")
                                 self.events.put(("log", "\n".join(_ol)))
                 except Exception:
                     pass
@@ -2305,7 +2306,7 @@ class ScannerApp(tk.Tk):
         else:
             subject = f"东风-61洲际导弹 每日建议下注 {day} ({len(rows)}场)"
             head = f"今日 21:00 建议下注汇总，共 {len(rows)} 场。"
-        body = head + "\n\n" + text
+        body = head + "\n\n" + text.rstrip() + "\n\n" + MAIL_DISCLAIMER
         fname = f"建议下注_{day}.csv"
         data = ("\ufeff" + text).encode("utf-8")
         html_body = self._digest_html(rows, head)
@@ -2352,6 +2353,11 @@ class ScannerApp(tk.Tk):
             + esc(head)
             + "\n\n"
             + "\n".join(lines)
+            + "\n\n"
+            + '<div style="margin-top:18px;color:#b45309;font-size:16px;'
+            'font-weight:700;">'
+            + esc(MAIL_DISCLAIMER)
+            + "</div>"
         ) + "</div></body></html>"
 
     def _proxy_cfg_path(self):
