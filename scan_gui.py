@@ -2126,8 +2126,10 @@ class ScannerApp(tk.Tk):
         e_sender = row("发件QQ邮箱:")
         e_auth = row("SMTP授权码:")
         e_to = row("收件邮箱(多地址用,分隔):")
+        e_title = row("邮件标题备注:")
         e_sender.insert(0, self.mail_cfg.get("sender", ""))
         e_auth.insert(0, self.mail_cfg.get("auth", ""))
+        e_title.insert(0, self.mail_cfg.get("mail_title", ""))
         old_to = self.mail_cfg.get("to", "")
         if isinstance(old_to, list):
             old_to = ",".join(old_to)
@@ -2136,6 +2138,11 @@ class ScannerApp(tk.Tk):
         ttk.Checkbutton(win, text="启用邮箱通知", variable=enabled).pack(
             anchor="w", **pad
         )
+        ttk.Label(
+            win,
+            text="标题备注示例: 8-BET365；邮件会自动附带当前扫描的公司ID",
+            foreground="#556",
+        ).pack(anchor="w", **pad)
         ttk.Label(
             win,
             text="授权码获取: mail.qq.com → 设置 → 账户 → 开启SMTP服务 → 生成授权码",
@@ -2156,6 +2163,7 @@ class ScannerApp(tk.Tk):
                 "auth": e_auth.get().strip(),
                 "to": to_list,
                 "enabled": enabled.get(),
+                "mail_title": e_title.get().strip(),
             }
             self._save_mail_cfg()
             self._append_log("邮箱通知设置已保存")
@@ -2196,8 +2204,48 @@ class ScannerApp(tk.Tk):
             day, tag="自动", reason=getattr(self, "_digest_reason", "")
         )
 
+    def _mail_source_text(self, cfg=None):
+        """邮件中显示的盘口来源，例如「8-BET365（公司ID 8）」。"""
+        cfg = cfg or self.mail_cfg
+        note = str(cfg.get("mail_title") or "").replace("\r", " ").replace("\n", " ").strip()
+        cid = getattr(self, "cid", None)
+        if cid is None:
+            try:
+                cid = int(self.e_cid.get().strip())
+            except Exception:
+                cid = None
+        if note and cid is not None:
+            return f"{note}（公司ID {cid}）"
+        if note:
+            return note
+        return f"公司ID {cid}" if cid is not None else "公司ID未设置"
+
+    def _decorate_mail(self, cfg, subject, body, html_body=None):
+        """给所有邮件统一加标题备注，并明确标注本次扫描的公司ID。"""
+        source = self._mail_source_text(cfg)
+        subject = f"【{source}】{subject}" if source else subject
+        body = f"扫描来源: {source}\n\n{body}"
+        if html_body:
+            source_html = (
+                '<div style="margin:0 0 14px 0;padding:8px 10px;'
+                'background:#fff4e5;color:#8a4b08;font-weight:700;'
+                'border-left:4px solid #d97706;">扫描来源: '
+                + _html.escape(source)
+                + "</div>"
+            )
+            body_start = html_body.lower().find("<body")
+            body_end = html_body.find(">", body_start) if body_start >= 0 else -1
+            if body_end >= 0:
+                html_body = html_body[: body_end + 1] + source_html + html_body[body_end + 1 :]
+            else:
+                html_body = source_html + html_body
+        return subject, body, html_body
+
     def _mail_worker(self, cfg, subject, body, attachment=None, html_body=None):
         try:
+            subject, body, html_body = self._decorate_mail(
+                cfg, subject, body, html_body
+            )
             if attachment:
                 from email.mime.base import MIMEBase
                 from email.mime.multipart import MIMEMultipart
