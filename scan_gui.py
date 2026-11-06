@@ -3561,8 +3561,13 @@ class ScannerApp(tk.Tk):
 
     def _save_history(self):
         try:
-            with open(self._history_path(), "w", encoding="utf-8") as f:
+            path = self._history_path()
+            temp_path = path + ".tmp"
+            with open(temp_path, "w", encoding="utf-8") as f:
                 json.dump(self.all_rows, f, ensure_ascii=False, indent=1)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_path, path)
         except Exception as e:
             self._append_log(f"跟踪记录保存失败: {e}")
 
@@ -3577,22 +3582,11 @@ class ScannerApp(tk.Tk):
             return
         if not isinstance(data, list):
             return
-        from datetime import datetime, timedelta
-
-        now = datetime.now()
-        kept = []
-        for r in data:
-            if not isinstance(r, dict) or not r.get("sid"):
-                continue
-            ko = r.get("kickoff")
-            try:
-                ko_dt = datetime.strptime(ko, "%Y-%m-%d %H:%M")
-                if now - ko_dt > timedelta(days=3):
-                    continue
-            except (TypeError, ValueError):
-                pass
-            kept.append(r)
-        self.all_rows = kept
+        # 历史记录只在用户主动删除时清理。旧版启动时会静默丢弃
+        # 开赛超过 3 天的记录，导致电脑重启后历史比赛全部消失。
+        self.all_rows = [
+            r for r in data if isinstance(r, dict) and r.get("sid")
+        ]
 
     def _auto_note(self, sid):
         r = next((x for x in self.last_rows if str(x.get("sid")) == str(sid)), None)
