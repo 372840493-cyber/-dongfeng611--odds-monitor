@@ -42,6 +42,16 @@ def now():
     return datetime.now().strftime("%H:%M:%S")
 
 
+def row_has_tendency(row):
+    return (
+        isinstance(row, dict)
+        and (
+            "倾向" in str(row.get("bet_snapshot") or "")
+            or "倾向" in str(row.get("bet_snapshot2") or "")
+        )
+    )
+
+
 # 临场提醒提前量(分钟)
 PREMATCH_MIN = 15
 MAIL_DISCLAIMER = "（禁止赌博行为，只提供数据参考！）"
@@ -1781,6 +1791,7 @@ class ScannerApp(tk.Tk):
         self._rechecked.discard(sid)
         self._score_verified.discard(sid)
         self._mark_skip([sid])      # 删掉就不再扫描/不再弹倾向(保留24小时)
+        self._remove_from_tendency_archive([sid])
         self._render(self.all_rows, set())
         self._save_history()
         name = (
@@ -1821,6 +1832,7 @@ class ScannerApp(tk.Tk):
             return
         self._backup_history()
         self._mark_skip([str(r.get("sid")) for r in self.all_rows])
+        self._clear_tendency_archive()
         self.all_rows = []
         self.live_sids.clear()
         self.live_meta.clear()
@@ -3559,34 +3571,113 @@ class ScannerApp(tk.Tk):
     def _history_path(self):
         return os.path.join(app_dir(), "track_history.json")
 
-    def _save_history(self):
+    def _tendency_history_path(self):
+        return os.path.join(app_dir(), "tendency_history.json")
+
+    def _atomic_json_write(self, path, data):
+        temp_path = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
         try:
-            path = self._history_path()
-            temp_path = path + ".tmp"
             with open(temp_path, "w", encoding="utf-8") as f:
-                json.dump(self.all_rows, f, ensure_ascii=False, indent=1)
+                json.dump(data, f, ensure_ascii=False, indent=1)
                 f.flush()
                 os.fsync(f.fileno())
             os.replace(temp_path, path)
+        finally:
+            try:
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+            except OSError:
+                pass
+
+    def _load_tendency_archive(self):
+        path = self._tendency_history_path()
+        if not os.path.exists(path):
+            return []
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                return [r for r in data if row_has_tendency(r)]
+        except Exception:
+            pass
+        return []
+
+    def _save_tendency_archive(self):
+        """保存最终倾向；清空完赛记录不会删除这里的数据。"""
+        archive = {}
+        for r in self._load_tendency_archive():
+            archive[str(r.get("sid"))] = r
+        for r in self.all_rows:
+            if row_has_tendency(r):
+                sid = str(r.get("sid") or "")
+                if sid:
+                    archive[sid] = {**archive.get(sid, {}), **r}
+        rows = sorted(
+            archive.values(),
+            key=lambda r: (
+                str(r.get("kickoff") or "9999-99-99 99:99"),
+                str(r.get("league") or ""),
+                str(r.get("home") or ""),
+            ),
+        )
+        self._atomic_json_write(self._tendency_history_path(), rows)
+
+    def _remove_from_tendency_archive(self, sids):
+        remove_sids = {str(sid) for sid in sids}
+        rows = [
+            r for r in self._load_tendency_archive()
+            if str(r.get("sid")) not in remove_sids
+        ]
+        self._atomic_json_write(self._tendency_history_path(), rows)
+
+    def _clear_tendency_archive(self):
+        self._atomic_json_write(self._tendency_history_path(), [])
+
+    def _save_history(self):
+        try:
+            path = self._history_path()
+            self._atomic_json_write(path, self.all_rows)
         except Exception as e:
             self._append_log(f"跟踪记录保存失败: {e}")
+        try:
+            self._save_tendency_archive()
+        except Exception as e:
+            self._append_log(f"倾向档案保存失败: {e}")
 
     def _load_history(self):
         p = self._history_path()
-        if not os.path.exists(p):
-            return
-        try:
-            with open(p, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except Exception:
-            return
-        if not isinstance(data, list):
-            return
-        # 历史记录只在用户主动删除时清理。旧版启动时会静默丢弃
-        # 开赛超过 3 天的记录，导致电脑重启后历史比赛全部消失。
-        self.all_rows = [
-            r for r in data if isinstance(r, dict) and r.get("sid")
-        ]
+        data = []
+        if os.path.exists(p):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    loaded = json.load(f)
+                if isinstance(loaded, list):
+                    data = loaded
+            except Exception:
+                pass
+
+        by_sid = {}
+        for r in data:
+            if isinstance(r, dict) and r.get("sid"):
+                by_sid[str(r["sid"])] = r
+        # 即使主列表被清空，最终倾向仍从独立档案恢复。
+        for r in self._load_tendency_archive():
+            sid = str(r.get("sid") or "")
+            if not sid:
+                continue
+            current = by_sid.get(sid, {})
+            clean_current = {
+                k: v for k, v in current.items() if v is not None and v != ""
+            }
+            by_sid[sid] = {**r, **clean_current}
+        self.all_rows = sorted(
+            by_sid.values(),
+            key=lambda r: (
+                str(r.get("kickoff") or "9999-99-99 99:99"),
+                str(r.get("league") or ""),
+                str(r.get("home") or ""),
+            ),
+        )
 
     def _auto_note(self, sid):
         r = next((x for x in self.last_rows if str(x.get("sid")) == str(sid)), None)

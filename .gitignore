@@ -5,6 +5,9 @@ __pycache__/
 *.pyc
 notes.json
 track_history.json
+tendency_history.json
+track_history.json.*.tmp
+tendency_history.json.*.tmp
 email_config.json
 league_filter.json
 app_settings.json
