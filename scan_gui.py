@@ -402,7 +402,7 @@ class ScannerApp(tk.Tk):
             )
         return txt
 
-    def _recheck_judgement_text(self, r, cur_tend):
+    def _recheck_judgement_text(self, r, cur_tend, original_tendency=""):
         """临场复查邮件中的结构化判断结果。"""
 
         def f2(v):
@@ -455,6 +455,16 @@ class ScannerApp(tk.Tk):
             return prob, side
 
         lines = ["", "判断结果:"]
+        if original_tendency:
+            lines.append(f"- 原始倾向: {original_tendency}")
+        lines.append(
+            f"- 原始平博亚盘: {ah_desc(r.get('ah_open_line'))} "
+            f"水{f2(r.get('ah_open_water_h'))}/{f2(r.get('ah_open_water_a'))}"
+        )
+        lines.append(
+            f"- 原始皇冠亚盘: {ah_desc(r.get('c2ah_open_line'))} "
+            f"水{f2(r.get('c2ah_open_water_h'))}/{f2(r.get('c2ah_open_water_a'))}"
+        )
         lines.append(f"- 平博亚盘: {line_move(r.get('ah_open_line'), r.get('ah_cur_line'))}")
         lines.append(
             f"- 皇冠亚盘: {line_move(r.get('c2ah_open_line'), r.get('c2ah_cur_line'))}"
@@ -1611,7 +1621,7 @@ class ScannerApp(tk.Tk):
                                 _cmp = f"皇冠低{sc.fmt_line(abs(_d))}"
                         else:
                             _cmp = "皇冠无数据"
-                        extra = self._recheck_judgement_text(r, cur_tend)
+                        extra = self._recheck_judgement_text(r, cur_tend, snap)
                     ou_txt = self._ou_advice_text(r)
                     body = (
                         f"开赛时间: {ko}\n"
