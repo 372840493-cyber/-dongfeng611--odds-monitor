@@ -402,6 +402,145 @@ class ScannerApp(tk.Tk):
             )
         return txt
 
+    def _recheck_judgement_text(self, r, cur_tend):
+        """临场复查邮件中的结构化判断结果。"""
+
+        def f2(v):
+            return f"{v:.2f}" if v is not None else "-"
+
+        def ah_desc(v):
+            if v is None:
+                return "无数据"
+            if abs(v) < 1e-9:
+                return "平手"
+            return f"{'主让' if v > 0 else '客让'}{abs(v):g}"
+
+        def water_move(old, new, side_label):
+            if old is None or new is None:
+                return f"{side_label}水位无数据"
+            d = new - old
+            if abs(d) < 0.005:
+                move = "不变"
+            elif d >= 0.05:
+                move = f"大升水 {d:+.2f}"
+            elif d <= -0.05:
+                move = f"大降水 {d:+.2f}"
+            elif d > 0:
+                move = f"小升水 {d:+.2f}"
+            else:
+                move = f"小降水 {d:+.2f}"
+            return f"{f2(old)} → {f2(new)}（{move}）"
+
+        def line_move(old, cur):
+            if old is None or cur is None:
+                return "无数据"
+            d = abs(cur) - abs(old)
+            if abs(d) < 1e-9:
+                move = "盘口不变"
+            elif d > 0:
+                move = f"升盘{d:g}"
+            else:
+                move = f"降盘{abs(d):g}"
+            return f"{ah_desc(old)} → {ah_desc(cur)}（{move}）"
+
+        def strength(tag):
+            line = r.get(f"{tag}_cur_line")
+            wh = r.get(f"{tag}_cur_water_h")
+            wa = r.get(f"{tag}_cur_water_a")
+            if line is None or not wh or not wa:
+                return None, "主队" if (line or 0) >= 0 else "客队"
+            p_home = (1.0 / wh) / ((1.0 / wh) + (1.0 / wa))
+            side = "主队" if line >= 0 else "客队"
+            prob = p_home if line >= 0 else 1.0 - p_home
+            return prob, side
+
+        lines = ["", "判断结果:"]
+        lines.append(f"- 平博亚盘: {line_move(r.get('ah_open_line'), r.get('ah_cur_line'))}")
+        lines.append(
+            f"- 皇冠亚盘: {line_move(r.get('c2ah_open_line'), r.get('c2ah_cur_line'))}"
+        )
+        lines.append(
+            f"- 平博主队水位: {water_move(r.get('ah_open_water_h'), r.get('ah_cur_water_h'), '平博主队')}"
+        )
+        lines.append(
+            f"- 皇冠主队水位: {water_move(r.get('c2ah_open_water_h'), r.get('c2ah_cur_water_h'), '皇冠主队')}"
+        )
+
+        pin_prob, pin_side = strength("ah")
+        crown_prob, crown_side = strength("c2ah")
+        pin_strength = f"{pin_prob*100:.1f}%" if pin_prob is not None else "无数据"
+        crown_strength = f"{crown_prob*100:.1f}%" if crown_prob is not None else "无数据"
+        lines.append(
+            f"- 当前强度: 平博{pin_side} {pin_strength} | 皇冠{crown_side} {crown_strength}（门槛55%）"
+        )
+
+        pin_open = r.get("ah_open_line")
+        pin_cur = r.get("ah_cur_line")
+        pin_old_w = r.get("ah_open_water_h") if (pin_cur is not None and pin_cur >= 0) else r.get("ah_open_water_a")
+        pin_new_w = r.get("ah_cur_water_h") if (pin_cur is not None and pin_cur >= 0) else r.get("ah_cur_water_a")
+        deepened = (
+            pin_open is not None
+            and pin_cur is not None
+            and abs(pin_cur) > abs(pin_open) + 1e-9
+        )
+        water_up = (
+            pin_old_w is not None
+            and pin_new_w is not None
+            and pin_new_w - pin_old_w >= 0.05
+        )
+        if cur_tend.startswith("不建议下注"):
+            if deepened and water_up:
+                lines.append(
+                    f"- 亚盘判断: 让球加深但{pin_side}大升水，且强度"
+                    f"{pin_strength}低于55%，不建议继续追{pin_side}"
+                )
+            else:
+                lines.append(
+                    f"- 亚盘判断: 当前强度{pin_strength}未达到55%门槛，不建议继续追盘"
+                )
+        else:
+            lines.append(f"- 亚盘判断: 当前仍为 {cur_tend}")
+
+        pin_ou = sc.fmt_odds(r.get("open_line"), r.get("open_big"), r.get("open_small"))
+        pin_ou_cur = sc.fmt_odds(r.get("cur_line"), r.get("cur_big"), r.get("cur_small"))
+        crown_ou = sc.fmt_odds(r.get("c2_open_line"), r.get("c2_open_big"), r.get("c2_open_small"))
+        crown_ou_cur = sc.fmt_odds(r.get("c2_cur_line"), r.get("c2_cur_big"), r.get("c2_cur_small"))
+        lines.append(f"- 平博大小球: {pin_ou} → {pin_ou_cur}")
+        lines.append(f"- 皇冠大小球: {crown_ou} → {crown_ou_cur}")
+
+        ou_ld = None
+        ou_wd = None
+        if r.get("open_line") is not None and r.get("cur_line") is not None:
+            ou_ld = r["cur_line"] - r["open_line"]
+        if r.get("open_big") is not None and r.get("cur_big") is not None:
+            ou_wd = r["cur_big"] - r["open_big"]
+        if ou_ld is None or ou_wd is None or (abs(ou_ld) < 1e-9 and abs(ou_wd) < 0.005):
+            ou_action = "盘口/水位不变"
+        else:
+            line_part = "升盘" if ou_ld > 1e-9 else ("降盘" if ou_ld < -1e-9 else "平盘")
+            if abs(ou_wd) < 0.005:
+                water_part = "水位不变"
+            elif ou_wd >= 0.05:
+                water_part = "大升水"
+            elif ou_wd <= -0.05:
+                water_part = "大降水"
+            elif ou_wd > 0:
+                water_part = "小升水"
+            else:
+                water_part = "小降水"
+            ou_action = f"{line_part} + {water_part}"
+        ou_sig = sc.ou_signal(r) or "无"
+        ou_score = sc.size_score(r)["total"]
+        lines.append(f"- 大小球动作: {ou_action}")
+        lines.append(f"- 大小球信号: {ou_sig} | 评分 {ou_score}/35")
+        pf = r.get("platform") or {}
+        if pf:
+            lines.append(
+                f"- 全平台主流: {pf.get('top')}（{pf.get('top_pct')}%，共{pf.get('n')}家）"
+            )
+        lines.append(f"- 临场结论: {cur_tend}")
+        return "\n".join(lines)
+
     def _net_check(self):
         """一键体检: 即时比分 / 盘口直连 / 加速器代理, 结果写到日志。"""
         self._append_log("开始网络体检…")
@@ -1472,65 +1611,7 @@ class ScannerApp(tk.Tk):
                                 _cmp = f"皇冠低{sc.fmt_line(abs(_d))}"
                         else:
                             _cmp = "皇冠无数据"
-                        _al, _a2 = r.get("ah_cur_line"), r.get("c2ah_cur_line")
-                        if _al is not None and _a2 is not None:
-                            _ad = round(_a2 - _al, 3)
-                            if abs(_ad) < 1e-9:
-                                _acmp = "与平博同盘"
-                            elif _ad > 0:
-                                _acmp = f"皇冠高{sc.fmt_line(_ad)}"
-                            else:
-                                _acmp = f"皇冠低{sc.fmt_line(abs(_ad))}"
-                        else:
-                            _acmp = "皇冠无数据"
-                        def _w(a, b):
-                            return f"{a}/{b}" if a is not None and b is not None else "-"
-
-                        _ah_txt = "无数据"
-                        if _al is not None:
-                            _ah_txt = (
-                                f"平博 {sc.fmt_ah_line(_al)} 水{_w(r.get('ah_cur_water_h'), r.get('ah_cur_water_a'))}"
-                            )
-                            if _a2 is not None:
-                                _ah_txt += (
-                                    f" | 皇冠 {sc.fmt_ah_line(_a2)} "
-                                    f"水{_w(r.get('c2ah_cur_water_h'), r.get('c2ah_cur_water_a'))}（{_acmp}）"
-                                )
-                        extra = (
-                            f"\n当前倾向: {cur_tend}\n"
-                            f"当前亚盘: {_ah_txt}\n"
-                            f"当前大小球(仅参考): 平博 {sc.fmt_odds(_cl, r.get('cur_big'), r.get('cur_small'))}"
-                            f" | 皇冠 {sc.fmt_odds(_c2, r.get('c2_cur_big'), r.get('c2_cur_small'))}"
-                            f"（{_cmp}）"
-                        )
-                        _reason = []
-                        if _al is None or _a2 is None:
-                            _reason.append("亚盘数据不全")
-                        elif _al * _a2 <= 0:
-                            _reason.append("两家亚盘方向不一致")
-                        else:
-                            _wh = r.get("ah_cur_water_h")
-                            _wa = r.get("ah_cur_water_a")
-                            if _wh and _wa:
-                                _ih, _ia = 1.0 / _wh, 1.0 / _wa
-                                _ph = _ih / (_ih + _ia)
-                                _prob = _ph if _al >= 0 else 1.0 - _ph
-                                if _prob < 0.55:
-                                    _reason.append(f"亚盘强度{_prob*100:.0f}%<55%")
-                                else:
-                                    _reason.append(f"亚盘强度{_prob*100:.0f}%")
-                            else:
-                                _reason.append("亚盘水位缺失")
-                        _osig = sc.ou_signal(r) or "无"
-                        _oscore = sc.size_score(r)["total"]
-                        _reason.append(f"大小球信号:{_osig}")
-                        _reason.append(f"大小球评分{_oscore}/35")
-                        _pf = r.get("platform") or {}
-                        if _pf:
-                            _reason.append(
-                                f"全平台主流{_pf.get('top')}({_pf.get('top_pct')}%)"
-                            )
-                        extra += "\n变化原因: " + " ｜ ".join(_reason)
+                        extra = self._recheck_judgement_text(r, cur_tend)
                     ou_txt = self._ou_advice_text(r)
                     body = (
                         f"开赛时间: {ko}\n"
