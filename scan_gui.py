@@ -592,11 +592,22 @@ class ScannerApp(tk.Tk):
                         "＜- DNS 被加速器弄坏了"
                     )
 
-            vip = "https://vip.titan007.com/OverDown_n.aspx?id=1&l=0"
+            test_sid = ""
+            if self.all_rows:
+                test_sid = str(self.all_rows[0].get("sid") or "")
+            if not test_sid:
+                test_sid = "3047549"
+            vip = f"https://vip.titan007.com/OverDown_n.aspx?id={test_sid}&l=0"
+
+            def probe(proxy=None, timeout=12):
+                body = t._one_fetch(vip, timeout, proxy)
+                if len(body or "") < 500:
+                    raise RuntimeError(f"盘口页返回空内容({len(body or '')}字节)")
+                return body
             t0 = time.time()
             direct_ok = False
             try:
-                t._one_fetch(vip, 6, None)
+                probe(None, 6)
                 direct_ok = True
             except Exception:
                 direct_ok = False
@@ -610,7 +621,7 @@ class ScannerApp(tk.Tk):
             if cfg.get("enabled") and cfg.get("host"):
                 t0 = time.time()
                 try:
-                    t._one_fetch(vip, 18, t.proxy_url())
+                    probe(t.proxy_url(), 18)
                     proxy_ok = True
                     log(
                         f"③ 快代理/自定义代理: 可以拉盘口 ✅ "
@@ -634,7 +645,7 @@ class ScannerApp(tk.Tk):
                 log("④ 本机加速器: 没找到可用端口（加速器没开/没连上节点）")
             else:
                 try:
-                    t._one_fetch(vip, 8, f"http://127.0.0.1:{port}")
+                    probe(f"http://127.0.0.1:{port}", 10)
                     local_ok = True
                     log(f"④ 本机加速器: 端口 {port} 可以拉盘口 ✅ ({time.time()-t0:.1f}s)")
                 except Exception as e:
