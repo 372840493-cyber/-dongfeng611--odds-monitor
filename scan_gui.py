@@ -1410,6 +1410,14 @@ class ScannerApp(tk.Tk):
                     )
                 if r.get("error"):
                     counters["err"] += 1
+                    self.events.put(
+                        (
+                            "log",
+                            "拉盘失败: "
+                            f"{r.get('league', '')} {r.get('home', '')} vs "
+                            f"{r.get('away', '')} → {str(r.get('error'))[:100]}",
+                        )
+                    )
                     if (
                         counters["ok"] == 0
                         and counters["err"] >= self._round_abort_after
@@ -1465,7 +1473,7 @@ class ScannerApp(tk.Tk):
                 cid=self.cid,
                 cid2=3,
                 workers=self.workers,
-                timeout=18,
+                timeout=(10 if getattr(self, "_remote_proxy", False) else 18),
                 on_result=on_result,
                 stop_check=lambda: (
                     self.stop_ev.is_set() or self._round_abort.is_set()
