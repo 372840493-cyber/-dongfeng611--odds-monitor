@@ -52,6 +52,17 @@ def row_has_tendency(row):
     )
 
 
+def extra_time_mark(league):
+    """杯赛/淘汰赛可能在打平后进入加时或点球；无阶段信息时标记“可能”。"""
+    name = str(league or "").strip()
+    hints = (
+        "杯", "淘汰赛", "附加赛", "半决赛", "决赛",
+        "亚冠精英", "亚冠联", "欧冠", "欧罗巴", "欧协联",
+        "解放者", "南美杯", "优胜者杯", "国家联赛", "联合会杯",
+    )
+    return "⚠️可能" if any(k in name for k in hints) else ""
+
+
 # 临场提醒提前量(分钟)
 PREMATCH_MIN = 15
 MAIL_DISCLAIMER = "（禁止赌博行为，只提供数据参考！）"
@@ -72,6 +83,7 @@ class ScannerApp(tk.Tk):
         ("c2open", "皇冠初盘", 92),
         ("c2cur", "皇冠即时", 92),
         ("bet", "下注层", 260),
+        ("extra_time", "加时/点球", 78),
     ]
 
     COMPANY_NAMES = {
@@ -3524,6 +3536,7 @@ class ScannerApp(tk.Tk):
                 tag = ""
             bet_txt = sc.betting_reference(r)
             bet_cell = sc.bet_cell(r)
+            r["extra_time"] = extra_time_mark(r.get("league"))
             row_tags = []
             if tag:
                 row_tags.append(tag)
@@ -3553,6 +3566,7 @@ class ScannerApp(tk.Tk):
                         r.get("c2_cur_line"), r.get("c2_cur_big"), r.get("c2_cur_small")
                     ),
                     bet_cell,
+                    r.get("extra_time", ""),
                 ),
                 tags=tuple(row_tags),
             )
@@ -3857,7 +3871,9 @@ class ScannerApp(tk.Tk):
             return
         with open(path, "w", newline="", encoding="utf-8-sig") as f:
             w = csv.writer(f)
-            w.writerow(["联赛", "开赛", "比分/状态", "主队", "客队", "下注层"])
+            w.writerow(
+                ["联赛", "开赛", "比分/状态", "主队", "客队", "下注层", "加时/点球"]
+            )
             for r in rows:
                 w.writerow(
                     [
@@ -3867,6 +3883,7 @@ class ScannerApp(tk.Tk):
                         r.get("home", ""),
                         r.get("away", ""),
                         sc.bet_cell(r),
+                        extra_time_mark(r.get("league")),
                     ]
                 )
         self._append_log(f"已导出 {path}")
