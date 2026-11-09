@@ -1279,6 +1279,17 @@ class ScannerApp(tk.Tk):
         except ValueError:
             messagebox.showerror("参数错误", "阈值/公司ID/间隔/并发必须是数字")
             return
+        remote_proxy = self.proxy_cfg.get("host", "") not in (
+            "", "127.0.0.1", "localhost"
+        )
+        self._remote_proxy = remote_proxy
+        if remote_proxy and workers != 1:
+            workers = 1
+            self.e_workers.delete(0, "end")
+            self.e_workers.insert(0, "1")
+            self.events.put(
+                ("log", "快代理模式已自动调整并发为 1（避免球探断开并发连接）")
+            )
         self.thr, self.cid, self.interval, self.workers = thr, cid, interval, workers
         self._apply_main_labels(cid)
         self._set_auto_resume_scan(True)
@@ -1388,7 +1399,8 @@ class ScannerApp(tk.Tk):
                     return
                 results.append(r)
                 counters["done"] += 1
-                if counters["done"] % 10 == 0:
+                progress_every = 1 if getattr(self, "_remote_proxy", False) else 10
+                if counters["done"] % progress_every == 0:
                     self.events.put(
                         (
                             "log",
