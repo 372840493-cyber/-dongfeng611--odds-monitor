@@ -602,29 +602,50 @@ class ScannerApp(tk.Tk):
                 direct_ok = False
             log(
                 f"② 盘口域名直连: {'通' if direct_ok else '不通'} "
-                f"({time.time()-t0:.1f}s) ＜- 不通就需要加速器"
+                f"({time.time()-t0:.1f}s) ＜- 不通时自动走代理"
             )
+
+            proxy_ok = False
+            cfg = self.proxy_cfg or {}
+            if cfg.get("enabled") and cfg.get("host"):
+                t0 = time.time()
+                try:
+                    t._one_fetch(vip, 18, t.proxy_url())
+                    proxy_ok = True
+                    log(
+                        f"③ 快代理/自定义代理: 可以拉盘口 ✅ "
+                        f"({time.time()-t0:.1f}s)"
+                    )
+                except Exception as e:
+                    log(
+                        f"③ 快代理/自定义代理: 拉不到盘口 "
+                        f"({str(e)[:60]}) ＜- 检查白名单、账号或线路"
+                    )
+            else:
+                log("③ 快代理/自定义代理: 未启用")
 
             t0 = time.time()
             try:
                 port = t.detect_proxy_port()
             except Exception:
                 port = None
+            local_ok = False
             if not port:
-                log("③ 加速器代理: 没找到可用端口（加速器没开/没连上节点）")
+                log("④ 本机加速器: 没找到可用端口（加速器没开/没连上节点）")
             else:
                 try:
                     t._one_fetch(vip, 8, f"http://127.0.0.1:{port}")
-                    log(f"③ 加速器代理: 端口 {port} 可以拉盘口 ✅ ({time.time()-t0:.1f}s)")
+                    local_ok = True
+                    log(f"④ 本机加速器: 端口 {port} 可以拉盘口 ✅ ({time.time()-t0:.1f}s)")
                 except Exception as e:
                     log(
-                        f"③ 加速器代理: 端口 {port} 存在但拉不到盘口 "
+                        f"④ 本机加速器: 端口 {port} 存在但拉不到盘口 "
                         f"({str(e)[:40]}) ＜- 换个节点/线路"
                     )
-            if direct_ok or port:
+            if direct_ok or proxy_ok or local_ok:
                 log("体检结论: 通道可用，可以开始扫描")
             else:
-                log("体检结论: 通道不通 → 先把加速器连上能访问外网的节点")
+                log("体检结论: 通道不通 → 检查快代理白名单/余额或本机加速器")
 
         threading.Thread(target=work, daemon=True).start()
 
