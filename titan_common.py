@@ -98,6 +98,7 @@ _PROXY_CFG = {
 
 
 def set_proxy(host=None, port=None, enabled=True, prefer=False, user=None, password=None, api_url=None):
+    global _MIN_GAP
     if host:
         _PROXY_CFG["host"] = str(host).strip()
     try:
@@ -116,6 +117,9 @@ def set_proxy(host=None, port=None, enabled=True, prefer=False, user=None, passw
         _API_POOL["idx"] = 0
     _PROXY_CFG["enabled"] = bool(enabled)
     _PROXY_CFG["prefer"] = bool(prefer)
+    # 远程代理访问同一目标站点时，按快代理/球探建议限制为约 1 次/秒。
+    _PROXY_CFG["host"] = str(_PROXY_CFG.get("host") or "").strip()
+    _MIN_GAP = 1.1 if _is_remote_proxy() else 0.25
 
 
 def _proxy_http(host, port):
