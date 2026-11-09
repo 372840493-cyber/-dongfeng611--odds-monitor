@@ -70,20 +70,20 @@ MAIL_DISCLAIMER = "（禁止赌博行为，只提供数据参考！）"
 
 class ScannerApp(tk.Tk):
     COLS = [
-        ("league", "联赛", 64),
-        ("time", "开赛", 46),
-        ("live", "比分/状态", 130),
-        ("home", "主队", 96),
-        ("away", "客队", 96),
-        ("open", "初盘", 92),
-        ("cur", "即时盘", 92),
-        ("diff", "盘差", 46),
-        ("open_time", "初盘时间", 74),
-        ("cur_time", "即时时间", 74),
-        ("c2open", "皇冠初盘", 92),
-        ("c2cur", "皇冠即时", 92),
-        ("bet", "下注层", 260),
-        ("extra_time", "加时/点球", 78),
+        ("league", "联赛", 58),
+        ("time", "开赛", 42),
+        ("live", "比分/状态", 105),
+        ("home", "主队", 76),
+        ("away", "客队", 76),
+        ("open", "初盘", 78),
+        ("cur", "即时盘", 78),
+        ("diff", "盘差", 40),
+        ("open_time", "初盘时间", 65),
+        ("cur_time", "即时时间", 65),
+        ("c2open", "皇冠初盘", 78),
+        ("c2cur", "皇冠即时", 78),
+        ("bet", "下注层", 180),
+        ("extra_time", "加时/点球", 70),
     ]
 
     COMPANY_NAMES = {
@@ -99,7 +99,7 @@ class ScannerApp(tk.Tk):
             "（本软件只提供数据参考，禁止非法赌博行为，如有违法行为后果自负！）"
         )
         self._set_app_icon()
-        self.geometry("1250x920")
+        self.geometry("1120x820")
         self.running = False
         self.stop_ev = threading.Event()
         self.worker = None
@@ -759,7 +759,13 @@ class ScannerApp(tk.Tk):
         self.tree = ttk.Treeview(body, columns=keys, show="headings", selectmode="browse")
         for (key, label, width), k in zip(self.COLS, keys):
             self.tree.heading(key, text=label, command=lambda k=key: self._sort_by(k))
-            self.tree.column(key, width=width, anchor="w")
+            self.tree.column(
+                key,
+                width=width,
+                minwidth=40,
+                stretch=(key != "bet"),
+                anchor="w",
+            )
         self._apply_main_labels(47)
         vs = ttk.Scrollbar(body, orient="vertical", command=self.tree.yview)
         hs = ttk.Scrollbar(body, orient="horizontal", command=self.tree.xview)
