@@ -198,6 +198,7 @@ class ScannerApp(tk.Tk):
         self.tree.bind("<Double-1>", self._on_double_click)
         self.after(3000, lambda: self._refresh_recs(True))
         self.after(10000, self._rec_tick)
+        self.after(1200, self._auto_resume_scan_if_needed)
 
     def _recent_enough(self, r, hours=3.5):
         """刚被扫描到的场次是否还值得跟踪(开赛超过 hours 小时视为已完场)。"""
@@ -1248,6 +1249,7 @@ class ScannerApp(tk.Tk):
             return
         self.thr, self.cid, self.interval, self.workers = thr, cid, interval, workers
         self._apply_main_labels(cid)
+        self._set_auto_resume_scan(True)
         self.running = True
         self.stop_ev.clear()
         self.alerted.clear()
@@ -1300,6 +1302,7 @@ class ScannerApp(tk.Tk):
         self.daily_thread.start()
 
     def stop(self):
+        self._set_auto_resume_scan(False)
         self.running = False
         self.stop_ev.set()
         self.status.config(text="停止中…")
@@ -2725,6 +2728,38 @@ class ScannerApp(tk.Tk):
             except Exception:
                 return False
         return False
+
+    def _load_auto_resume_scan(self):
+        p = self._app_settings_path()
+        if os.path.exists(p):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                return bool(data.get("auto_resume_scan"))
+            except Exception:
+                return False
+        return False
+
+    def _set_auto_resume_scan(self, active):
+        p = self._app_settings_path()
+        data = {}
+        if os.path.exists(p):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    data = json.load(f) or {}
+            except Exception:
+                data = {}
+        data["auto_resume_scan"] = bool(active)
+        try:
+            self._atomic_json_write(p, data)
+        except Exception as e:
+            self._append_log(f"自动续扫状态保存失败: {e}")
+
+    def _auto_resume_scan_if_needed(self):
+        if self.running or not self._load_auto_resume_scan():
+            return
+        self._append_log("检测到上次正在扫描，自动继续拉盘")
+        self.start()
 
     def _save_app_settings(self):
         """把界面开关写进 app_settings.json(保留其它设置)。"""
