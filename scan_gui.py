@@ -148,7 +148,10 @@ class ScannerApp(tk.Tk):
             self.proxy_cfg.get("port", 7890),
             self.proxy_cfg.get("enabled", True),
             self.proxy_cfg.get("prefer", True),
-            self.proxy_cfg.get("user", ""),
+            self._proxy_runtime_user(
+                self.proxy_cfg.get("host", ""),
+                self.proxy_cfg.get("user", ""),
+            ),
             self.proxy_cfg.get("pass", ""),
         )
         # 连续失败多少场就放弃这一轮：用「代理IP」时放宽，代理抖一下不至于整轮白跑
@@ -2613,6 +2616,17 @@ class ScannerApp(tk.Tk):
             "prefer": True,
         }
 
+    @staticmethod
+    def _proxy_runtime_user(host, user):
+        """快代理 Pro 使用固定 IP/企业池参数，防止每次请求换 IP 被球探断开。"""
+        host = str(host or "").strip().lower()
+        user = str(user or "").strip()
+        if host.endswith("kdltpspro.com") and user and all(
+            k not in user for k in ("-period-", "-type-", "-sid-", "-area-", "-prov-", "-city-")
+        ):
+            return user + "-period-1-type-std-sid-kd01"
+        return user
+
     def _open_proxy_settings(self):
         win = tk.Toplevel(self)
         win.title("代理设置")
@@ -2668,6 +2682,10 @@ class ScannerApp(tk.Tk):
                 self.proxy_cfg["port"],
                 self.proxy_cfg["enabled"],
                 self.proxy_cfg["prefer"],
+                self._proxy_runtime_user(
+                    self.proxy_cfg["host"], self.proxy_cfg["user"]
+                ),
+                self.proxy_cfg["pass"],
             )
             self._append_log(
                 f"代理设置已保存: {self.proxy_cfg['host']}:{self.proxy_cfg['port']} "
