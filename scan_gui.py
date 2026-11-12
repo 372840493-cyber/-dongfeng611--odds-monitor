@@ -154,10 +154,7 @@ class ScannerApp(tk.Tk):
             self.proxy_cfg.get("port", 7890),
             self.proxy_cfg.get("enabled", True),
             self.proxy_cfg.get("prefer", True),
-            self._proxy_runtime_user(
-                self.proxy_cfg.get("host", ""),
-                self.proxy_cfg.get("user", ""),
-            ),
+            self.proxy_cfg.get("user", ""),
             self.proxy_cfg.get("pass", ""),
         )
         # 连续失败多少场就放弃这一轮：用「代理IP」时放宽，代理抖一下不至于整轮白跑
@@ -1296,12 +1293,12 @@ class ScannerApp(tk.Tk):
             "", "127.0.0.1", "localhost"
         )
         self._remote_proxy = remote_proxy
-        if remote_proxy and workers != 1:
-            workers = 1
+        if remote_proxy and workers > 2:
+            workers = 2
             self.e_workers.delete(0, "end")
-            self.e_workers.insert(0, "1")
+            self.e_workers.insert(0, "2")
             self.events.put(
-                ("log", "快代理模式已自动调整并发为 1（避免球探断开并发连接）")
+                ("log", "快代理模式并发上限已调整为 2")
             )
         self.thr, self.cid, self.interval, self.workers = thr, cid, interval, workers
         self._apply_main_labels(cid)
@@ -2646,17 +2643,6 @@ class ScannerApp(tk.Tk):
             "prefer": True,
         }
 
-    @staticmethod
-    def _proxy_runtime_user(host, user):
-        """快代理 Pro 使用固定 IP/企业池参数，防止每次请求换 IP 被球探断开。"""
-        host = str(host or "").strip().lower()
-        user = str(user or "").strip()
-        if host.endswith("kdltpspro.com") and user and all(
-            k not in user for k in ("-period-", "-type-", "-sid-", "-area-", "-prov-", "-city-")
-        ):
-            return user + "-period-1-type-std-sid-kd01"
-        return user
-
     def _open_proxy_settings(self):
         win = tk.Toplevel(self)
         win.title("代理设置")
@@ -2712,9 +2698,7 @@ class ScannerApp(tk.Tk):
                 self.proxy_cfg["port"],
                 self.proxy_cfg["enabled"],
                 self.proxy_cfg["prefer"],
-                self._proxy_runtime_user(
-                    self.proxy_cfg["host"], self.proxy_cfg["user"]
-                ),
+                self.proxy_cfg["user"],
                 self.proxy_cfg["pass"],
             )
             self._append_log(
