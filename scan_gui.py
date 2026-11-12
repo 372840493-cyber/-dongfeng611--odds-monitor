@@ -66,6 +66,12 @@ def extra_time_mark(league):
 # 临场提醒提前量(分钟)
 PREMATCH_MIN = 15
 MAIL_DISCLAIMER = "（禁止赌博行为，只提供数据参考！）"
+BLOCKED_LEAGUE_KEYS = ("英锦赛",)
+
+
+def is_blocked_league(name):
+    name = str(name or "").strip()
+    return any(key in name for key in BLOCKED_LEAGUE_KEYS)
 
 
 class ScannerApp(tk.Tk):
@@ -1233,6 +1239,10 @@ class ScannerApp(tk.Tk):
                 self.rec_summary.configure(text=f"读取建议失败：{err}")
             return
         items = payload.get("items") or []
+        items = [
+            item for item in items
+            if not is_blocked_league(item.get("leagueName", ""))
+        ]
         cfg = payload.get("cfg") or {}
         wmin = str(cfg.get("recommendationWaterMin") or "0.88")
         wmax = str(cfg.get("recommendationWaterMax") or "1.5")
@@ -1295,6 +1305,14 @@ class ScannerApp(tk.Tk):
             )
         self.thr, self.cid, self.interval, self.workers = thr, cid, interval, workers
         self._apply_main_labels(cid)
+        kept_rows = [
+            r for r in self.all_rows
+            if not is_blocked_league(r.get("league", ""))
+        ]
+        if len(kept_rows) != len(self.all_rows):
+            self.all_rows = kept_rows
+            self._render(self.all_rows, set())
+            self._save_history()
         self._set_auto_resume_scan(True)
         self.running = True
         self.stop_ev.clear()
@@ -1374,6 +1392,18 @@ class ScannerApp(tk.Tk):
                 self._sleep(10)
                 continue
             matches = [m for m in matches if m["sid"] not in self.skip]
+            before_blocked = len(matches)
+            matches = [
+                m for m in matches
+                if not is_blocked_league(m.get("league", ""))
+            ]
+            if len(matches) != before_blocked:
+                self.events.put(
+                    (
+                        "log",
+                        f"已排除拉黑联赛 {before_blocked - len(matches)} 场（英锦赛不拉盘）",
+                    )
+                )
             if self.league_kw and not self.all_leagues_var.get():
                 before_filter = len(matches)
                 matches = [
@@ -3822,9 +3852,10 @@ class ScannerApp(tk.Tk):
         """保存最终倾向；清空完赛记录不会删除这里的数据。"""
         archive = {}
         for r in self._load_tendency_archive():
-            archive[str(r.get("sid"))] = r
+            if not is_blocked_league(r.get("league", "")):
+                archive[str(r.get("sid"))] = r
         for r in self.all_rows:
-            if row_has_tendency(r):
+            if row_has_tendency(r) and not is_blocked_league(r.get("league", "")):
                 sid = str(r.get("sid") or "")
                 if sid:
                     archive[sid] = {**archive.get(sid, {}), **r}
@@ -3874,12 +3905,13 @@ class ScannerApp(tk.Tk):
 
         by_sid = {}
         for r in data:
-            if isinstance(r, dict) and r.get("sid"):
+            if (isinstance(r, dict) and r.get("sid")
+                    and not is_blocked_league(r.get("league", ""))):
                 by_sid[str(r["sid"])] = r
         # 即使主列表被清空，最终倾向仍从独立档案恢复。
         for r in self._load_tendency_archive():
             sid = str(r.get("sid") or "")
-            if not sid:
+            if not sid or is_blocked_league(r.get("league", "")):
                 continue
             current = by_sid.get(sid, {})
             clean_current = {
