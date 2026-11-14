@@ -2,6 +2,7 @@
 """titan007 (球探网) public data helpers: schedule ids + over/under page parsing."""
 
 import json
+import html as _html
 import os
 import re
 import shutil
@@ -41,7 +42,8 @@ AH_CHANGE_URL = (
     "https://vip.titan007.com/changeDetail/handicap.aspx"
     "?id={sid}&companyID={cid}&l=0"
 )
-LIVE_DATA_URL = "https://bf.titan007.com/vbsxml/bfdata.js?r=007"
+LIVE_DATA_URL = "https://livestatic.titan007.com/vbsxml/bfdata_ut.js"
+LIVE_REFERER = "https://live.titan007.com/oldIndexall.aspx"
 HOME_URL = "https://www.titan007.com/"
 
 # 官方即时比分状态码: -1 完场 / 0 未开赛 / 1 上半场 / 2 中场 / 3 下半场
@@ -224,12 +226,12 @@ except Exception:
     _cffi_requests = None
 
 
-def _cffi_fetch(url, timeout=25, proxy=None):
+def _cffi_fetch(url, timeout=25, proxy=None, referer=None):
     kwargs = {
         "impersonate": "chrome",
         "timeout": int(timeout),
         "headers": {
-            "Referer": "https://www.titan007.com/",
+            "Referer": referer or "https://www.titan007.com/",
             "Accept-Language": "zh-CN,zh;q=0.9",
         },
     }
@@ -241,7 +243,7 @@ def _cffi_fetch(url, timeout=25, proxy=None):
     return _decode(r.content)
 
 
-def _curl_fetch(url, timeout=25, proxy=None, resolve_ip=None):
+def _curl_fetch(url, timeout=25, proxy=None, resolve_ip=None, referer=None):
     def build_args(ip):
         args = [
             _CURL,
@@ -253,7 +255,7 @@ def _curl_fetch(url, timeout=25, proxy=None, resolve_ip=None):
             "-H",
             "Accept-Language: zh-CN,zh;q=0.9",
             "-H",
-            "Referer: https://www.titan007.com/",
+            "Referer: " + (referer or "https://www.titan007.com/"),
             "-w",
             "\n__HTTP__%{http_code}",
         ]
@@ -421,7 +423,7 @@ def _is_conn_error(e):
     )
 
 
-def _one_fetch(url, timeout=25, proxy=None):
+def _one_fetch(url, timeout=25, proxy=None, referer=None):
     """一次抓取尝试: curl_cffi(Chrome指纹) -> curl.exe -> urllib。
 
     连不上(超时/被拒/握手失败)时直接放弃, 不再换工具重试同一条路,
@@ -430,7 +432,7 @@ def _one_fetch(url, timeout=25, proxy=None):
     errs = []
     if _cffi_requests is not None:
         try:
-            return _cffi_fetch(url, timeout, proxy)
+            return _cffi_fetch(url, timeout, proxy, referer)
         except Exception as e:
             errs.append(e)
             # 域名解析失败不要直接放弃：交给下一条路(curl)去做 DoH 解析后重试
@@ -438,7 +440,7 @@ def _one_fetch(url, timeout=25, proxy=None):
                 raise
     if _CURL:
         try:
-            return _curl_fetch(url, timeout, proxy)
+            return _curl_fetch(url, timeout, proxy, referer=referer)
         except Exception as e:
             errs.append(e)
             if _is_conn_error(e):
@@ -880,8 +882,69 @@ def parse_home_matches(html):
     return matches
 
 
+def _clean_cell(value):
+    return _html.unescape(re.sub(r"<[^>]+>", "", str(value or ""))).strip()
+
+
+def fetch_live_schedule_text(timeout=25):
+    """当前版本比分数据 JS；必须携带 live.titan007.com 作为 Referer。"""
+    url = LIVE_DATA_URL + "?r=007" + str(int(time.time() * 1000))
+    errors = []
+    proxies = [None]
+    if _is_remote_proxy():
+        proxies.append(proxy_url())
+    for proxy in proxies:
+        try:
+            body = _one_fetch(url, timeout, proxy, referer=LIVE_REFERER)
+            if body and "var A=Array(" in body:
+                return body
+            errors.append(RuntimeError("比分数据为空"))
+        except Exception as e:
+            errors.append(e)
+    raise errors[-1] if errors else RuntimeError("比分数据获取失败")
+
+
+def parse_live_schedule(text):
+    """解析新版 bfdata_ut.js 中未开赛的比赛。"""
+    matches = []
+    seen = set()
+    for m in re.finditer(r'A\[\d+\]="([^"]*)"\.split', text or ""):
+        f = m.group(1).split("^")
+        if len(f) < 46 or not f[0].isdigit() or f[0] in seen:
+            continue
+        # 13=状态，只保留未开赛；36=月-日，43=年份。
+        if f[13].strip() not in ("0", ""):
+            continue
+        kickoff = ""
+        dm = re.match(r"^\s*(\d{1,2})-(\d{1,2})\s*$", f[36])
+        if dm and re.match(r"^\d{4}$", f[43].strip()):
+            kickoff = f"{int(f[43]):04d}-{int(dm.group(1)):02d}-{int(dm.group(2)):02d} {f[11].strip()}"
+        home, away = _clean_cell(f[5]), _clean_cell(f[8])
+        if not home or not away:
+            continue
+        seen.add(f[0])
+        matches.append(
+            {
+                "sid": f[0],
+                "league": _clean_cell(f[2]),
+                "time": f[11].strip(),
+                "kickoff": kickoff,
+                "home": home,
+                "away": away,
+            }
+        )
+    return matches
+
+
 def fetch_home_matches():
-    """Fetch and parse today's match rows from the desktop homepage."""
+    """Fetch today's matches from the current live schedule feed."""
+    try:
+        matches = parse_live_schedule(fetch_live_schedule_text(timeout=25))
+        if matches:
+            return matches
+    except Exception:
+        pass
+    # 兼容旧首页结构。
     return parse_home_matches(fetch_text(HOME_URL, timeout=40))
 
 
@@ -1066,7 +1129,7 @@ def fetch_live_states(timeout=20, cache_secs=25):
     if _LIVE_CACHE["map"] is not None and now - _LIVE_CACHE["t"] < cache_secs:
         return _LIVE_CACHE["map"]
     try:
-        text = fetch_text(LIVE_DATA_URL, timeout=timeout)
+        text = fetch_live_schedule_text(timeout=timeout)
     except Exception:
         return _LIVE_CACHE["map"] or {}
     states = parse_live_states(text)
