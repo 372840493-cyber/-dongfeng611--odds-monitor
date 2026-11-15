@@ -441,6 +441,15 @@ class ScannerApp(tk.Tk):
             )
         return txt
 
+    def _pin_ah_strength(self, r):
+        line = r.get("ah_cur_line")
+        wh = r.get("ah_cur_water_h")
+        wa = r.get("ah_cur_water_a")
+        if line is None or not wh or not wa:
+            return None
+        p_home = (1.0 / wh) / ((1.0 / wh) + (1.0 / wa))
+        return p_home if line >= 0 else 1.0 - p_home
+
     def _recheck_judgement_text(self, r, cur_tend, original_tendency=""):
         """临场复查邮件中的结构化判断结果。"""
 
@@ -1755,6 +1764,27 @@ class ScannerApp(tk.Tk):
                         else:
                             _cmp = "皇冠无数据"
                         extra = self._recheck_judgement_text(r, cur_tend, snap)
+                    pin_prob = self._pin_ah_strength(r)
+                    consistency_ok = check_txt == "与之前最终倾向一致"
+                    strength_ok = pin_prob is not None and pin_prob >= 0.60
+                    ah_consensus = None
+                    if consistency_ok and strength_ok:
+                        ah_consensus = sc.fetch_platform_ah(
+                            sid, r.get("ah_cur_line"), timeout=15
+                        )
+                    consensus_ok = bool(ah_consensus and ah_consensus.get("pct", 0) >= 60)
+                    strength_txt = f"{pin_prob*100:.1f}%" if pin_prob is not None else "无数据"
+                    consensus_txt = (
+                        f"{ah_consensus['same']}/{ah_consensus['n']}家 "
+                        f"{ah_consensus['pct']}%"
+                        if ah_consensus else "无数据"
+                    )
+                    gate_text = (
+                        "临场推荐门槛:\n"
+                        f"- 15分钟复查一致: {'是' if consistency_ok else '否'}\n"
+                        f"- 平博强度: {strength_txt}（门槛60%）{' ✅' if strength_ok else ' ❌'}\n"
+                        f"- 亚盘平台共识: {consensus_txt}（门槛60%）{' ✅' if consensus_ok else ' ❌'}"
+                    )
                     ou_txt = self._ou_advice_text(r)
                     body = (
                         f"开赛时间: {ko}\n"
@@ -1765,6 +1795,7 @@ class ScannerApp(tk.Tk):
                         f"开赛前{PREMATCH_MIN}分钟复查"
                         f"{'（补发：检查时已开赛）' if late else ''}: "
                         f"{check_txt}{extra}\n"
+                        f"{gate_text}\n"
                         f"{ou_txt}"
                         f"{MAIL_DISCLAIMER}\n"
                     )
@@ -1773,9 +1804,15 @@ class ScannerApp(tk.Tk):
                         f"{info.get('home', '')} vs {info.get('away', '')}"
                     )
                     cfg = self.mail_cfg
-                    # 大小球临场结论是「不买」就不发邮件（只写日志），避免打扰
-                    _no_bet = "不买" in (ou_txt or "")
-                    if not _no_bet and cfg.get("enabled") and all(
+                    fail_reasons = []
+                    if not consistency_ok:
+                        fail_reasons.append("复查不一致")
+                    if not strength_ok:
+                        fail_reasons.append("强度不足60%")
+                    if not consensus_ok:
+                        fail_reasons.append("平台共识不足60%")
+                    send_ok = not fail_reasons
+                    if send_ok and cfg.get("enabled") and all(
                         cfg.get(k) for k in ("sender", "auth", "to")
                     ):
                         threading.Thread(
@@ -1790,8 +1827,10 @@ class ScannerApp(tk.Tk):
                         f"    原始倾向: {snap}",
                         f"    复查结果: {check_txt}",
                     ]
-                    if _no_bet:
-                        _lines[0] = _lines[0].replace("已发邮件", "未发邮件（结论：不买）")
+                    if not send_ok:
+                        _lines[0] = _lines[0].replace(
+                            "已发邮件", "未发邮件（" + "、".join(fail_reasons) + "）"
+                        )
                     for _ln in (extra or "").strip().splitlines():
                         if _ln.strip():
                             _lines.append("    " + _ln.strip())

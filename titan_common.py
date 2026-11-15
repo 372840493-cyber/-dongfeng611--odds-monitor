@@ -33,6 +33,7 @@ SCHEDULE_URLS = [
 ]
 
 OU_URL = "https://vip.titan007.com/OverDown_n.aspx?id={sid}&l=0"
+ASIAN_ODDS_URL = "https://vip.titan007.com/AsianOdds_n.aspx?id={sid}"
 CHANGE_URL = (
     "https://vip.titan007.com/changeDetail/overunder.aspx"
     "?id={sid}&companyID={cid}&l=0"

@@ -605,6 +605,49 @@ def fetch_platform_ou(sid, timeout=25):
     }
 
 
+def parse_platform_ah(html, expected_line):
+    """统计各公司当前亚盘方向与推荐主/客方向相同的比例。"""
+    if expected_line is None:
+        return None
+    expected_sign = 1 if expected_line > 1e-9 else (-1 if expected_line < -1e-9 else 0)
+    same = n = 0
+    for row in re.finditer(
+        r"<tr[^>]*>(?:(?!</tr>).)*?name=[\"']oddsShow[\"'].*?</tr>",
+        html or "",
+        re.I | re.S,
+    ):
+        goals = re.findall(r'goals="([^"]+)"', row.group(0), re.I)
+        if not goals:
+            continue
+        raw_line = goals[-1].strip()
+        try:
+            line = float(raw_line)
+        except (TypeError, ValueError):
+            line = t.parse_ah_line(raw_line)
+        if line is None:
+            continue
+        n += 1
+        actual_sign = 1 if line > 1e-9 else (-1 if line < -1e-9 else 0)
+        if actual_sign == expected_sign:
+            same += 1
+    if not n:
+        return None
+    return {
+        "n": n,
+        "same": same,
+        "pct": round(100.0 * same / n),
+        "side": "主队" if expected_sign >= 0 else "客队",
+    }
+
+
+def fetch_platform_ah(sid, expected_line, timeout=20):
+    try:
+        html = t.fetch_text(t.ASIAN_ODDS_URL.format(sid=sid), timeout=timeout)
+    except Exception:
+        return None
+    return parse_platform_ah(html, expected_line)
+
+
 def platform_text(pf):
     if not pf:
         return ""
