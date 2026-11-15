@@ -17,7 +17,7 @@ import time
 import tkinter as tk
 import urllib.error
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timedelta
 from email.header import Header
 from email.mime.text import MIMEText
 from tkinter import filedialog, messagebox, ttk
@@ -72,6 +72,26 @@ BLOCKED_LEAGUE_KEYS = ("英锦赛",)
 def is_blocked_league(name):
     name = str(name or "").strip()
     return any(key in name for key in BLOCKED_LEAGUE_KEYS)
+
+
+def select_scan_window(matches, hours=3, min_count=5):
+    """只保留临近开赛的比赛，避免一次扫描未来 24 小时数百场。"""
+    now = datetime.now()
+    for use_hours in (hours, 6):
+        cutoff = now + timedelta(hours=use_hours)
+        selected = []
+        for m in matches:
+            try:
+                ko = datetime.strptime(str(m.get("kickoff") or ""), "%Y-%m-%d %H:%M")
+            except (TypeError, ValueError):
+                selected.append(m)
+                continue
+            if ko >= now - timedelta(minutes=10) and ko <= cutoff:
+                selected.append(m)
+        if len(selected) >= min_count or use_hours == 6:
+            selected.sort(key=lambda m: (str(m.get("kickoff") or "9999"), str(m.get("league") or "")))
+            return selected, use_hours
+    return matches, hours
 
 
 class ScannerApp(tk.Tk):
@@ -1413,6 +1433,16 @@ class ScannerApp(tk.Tk):
                             f"联赛筛选: {before_filter} → {len(matches)} 场",
                         )
                     )
+            before_window = len(matches)
+            matches, window_hours = select_scan_window(matches)
+            if len(matches) != before_window:
+                self.events.put(
+                    (
+                        "log",
+                        f"扫描窗口: 未来 {window_hours} 小时 "
+                        f"{before_window} → {len(matches)} 场",
+                    )
+                )
             self.events.put(("log", f"本轮 {len(matches)} 场，开始拉盘…"))
             if self._pending_sids:
                 _pend = set(self._pending_sids)

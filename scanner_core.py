@@ -621,6 +621,11 @@ def _wc(c, k):
 
 
 def fetch_one(match, cid=47, cid2=None, timeout=18):
+    def fail(error):
+        row = dict(match)
+        row["error"] = str(error)
+        return row
+
     d = None
     last_err = None
     for attempt in range(2):
@@ -631,12 +636,9 @@ def fetch_one(match, cid=47, cid2=None, timeout=18):
             last_err = e
             time.sleep(0.6 * (attempt + 1))
     if d is None:
-        return {
-            "sid": match["sid"],
-            "error": f"{type(last_err).__name__}: {last_err}" if last_err else "fetch-fail",
-        }
+        return fail(f"{type(last_err).__name__}: {last_err}" if last_err else "fetch-fail")
     if not d or d.get("open_line") is None or d.get("cur_line") is None:
-        return {"sid": match["sid"], "error": "no-data"}
+        return fail("no-data")
     row = dict(match)
     row.update(d)
     row["diff"] = t.line_diff(d["open_line"], d["cur_line"])
