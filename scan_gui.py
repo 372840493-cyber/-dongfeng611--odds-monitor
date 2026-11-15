@@ -363,6 +363,43 @@ class ScannerApp(tk.Tk):
             "ge3": ge3,
         }
 
+    def _ou_signal_rate(self, r):
+        """返回当前大小球动作的同类样本命中率。"""
+        adv = self._ou_advice(r)
+        if not adv:
+            return None
+        if adv["buy_small"]:
+            st = self._pattern_stats("升盘阻大", clean=True)
+            win, lose, side = st["pin_small"], st["pin_big"], "小球"
+        elif adv["buy_big"]:
+            st = self._pattern_stats("诱大", clean=True)
+            win, lose, side = st["pin_big"], st["pin_small"], "大球"
+        else:
+            return None
+        dec = win + lose
+        return {
+            "side": side,
+            "sample": st["n"],
+            "win": win,
+            "lose": lose,
+            "rate": (win / dec) if dec else 0.0,
+        }
+
+    def _email_eligible_row(self, r):
+        """邮件只发送红色倾向；红色大小球还要求同类命中率至少60%。"""
+        locked_red = (
+            "倾向" in str(r.get("bet_snapshot") or "")
+            or "倾向" in str(r.get("bet_snapshot2") or "")
+        )
+        if not locked_red:
+            return False
+        text = sc.bet_cell(r)
+        if "[大小]" in text:
+            conf = self._ou_signal_rate(r)
+            if not conf or conf["sample"] < 20 or conf["rate"] < 0.60:
+                return False
+        return True
+
     def _ou_advice_text(self, r):
         """15分钟复查用的大小球建议(带样本量/基准对比, 优势小就不喊买)。"""
         adv = self._ou_advice(r)
@@ -395,18 +432,14 @@ class ScannerApp(tk.Tk):
                 f"({rate*100:.0f}%) | 正常联赛基准 {base_rate*100:.0f}% | "
                 f"优势 {edge:+.0f} 点（已排除青年队/女足/友谊赛）\n"
             )
-            if st_small["n"] < 20 or edge < 5:
+            if st_small["n"] < 20 or rate < 0.60:
                 txt += (
                     f"大小球建议: 不建议下注（"
-                    + (f"样本仅 {st_small['n']} 场，还不足以下结论" if st_small["n"] < 20 else f"优势太小 {edge:+.0f} 点")
+                    + (f"样本仅 {st_small['n']} 场，还不足以下结论" if st_small["n"] < 20 else f"同类命中率 {rate*100:.0f}%<60%")
                     + "）\n"
                 )
-            elif edge >= 10:
-                txt += f"大小球建议: 【买小球 {adv['line_txt']}】（信号明确, 优势 {edge:+.0f} 点）\n"
-            elif edge >= 5:
-                txt += f"大小球建议: 【参考小球 {adv['line_txt']}·轻仓】（优势一般 {edge:+.0f} 点）\n"
             else:
-                txt += f"大小球建议: 不建议下注（优势太小 {edge:+.0f} 点, 跟买大买小差不多）\n"
+                txt += f"大小球建议: 【买小球 {adv['line_txt']}】（信号明确, 优势 {edge:+.0f} 点）\n"
         elif adv["buy_big"]:
             win, dec, rate = _rate(st_big, "大")
             base_rate = base["big_rate"]
@@ -416,18 +449,14 @@ class ScannerApp(tk.Tk):
                 f"({rate*100:.0f}%) | 正常联赛基准 {base_rate*100:.0f}% | "
                 f"优势 {edge:+.0f} 点（已排除青年队/女足/友谊赛）\n"
             )
-            if st_big["n"] < 20 or edge < 5:
+            if st_big["n"] < 20 or rate < 0.60:
                 txt += (
                     f"大小球建议: 不建议下注（"
-                    + (f"样本仅 {st_big['n']} 场，还不足以下结论" if st_big["n"] < 20 else f"优势太小 {edge:+.0f} 点")
+                    + (f"样本仅 {st_big['n']} 场，还不足以下结论" if st_big["n"] < 20 else f"同类命中率 {rate*100:.0f}%<60%")
                     + "）\n"
                 )
-            elif edge >= 10:
-                txt += f"大小球建议: 【买大球 {adv['line_txt']}】（信号明确, 优势 {edge:+.0f} 点）\n"
-            elif edge >= 5:
-                txt += f"大小球建议: 【参考大球 {adv['line_txt']}·轻仓】（优势一般 {edge:+.0f} 点）\n"
             else:
-                txt += f"大小球建议: 不建议下注（优势太小 {edge:+.0f} 点, 跟买大买小差不多）\n"
+                txt += f"大小球建议: 【买大球 {adv['line_txt']}】（信号明确, 优势 {edge:+.0f} 点）\n"
         else:
             txt += (
                 "大小球建议: 不买（当前不是「升盘+大升水」也不是「降盘+大降水」）\n"
@@ -1766,25 +1795,50 @@ class ScannerApp(tk.Tk):
                         extra = self._recheck_judgement_text(r, cur_tend, snap)
                     pin_prob = self._pin_ah_strength(r)
                     consistency_ok = check_txt == "与之前最终倾向一致"
-                    strength_ok = pin_prob is not None and pin_prob >= 0.60
+                    is_ah_signal = "[亚盘]" in snap
+                    is_ou_signal = "[大小]" in snap
+                    strength_ok = (not is_ah_signal) or (
+                        pin_prob is not None and pin_prob >= 0.60
+                    )
                     ah_consensus = None
-                    if consistency_ok and strength_ok:
+                    if is_ah_signal and consistency_ok and strength_ok:
                         ah_consensus = sc.fetch_platform_ah(
                             sid, r.get("ah_cur_line"), timeout=15
                         )
-                    consensus_ok = bool(ah_consensus and ah_consensus.get("pct", 0) >= 60)
+                    consensus_ok = (not is_ah_signal) or bool(
+                        ah_consensus and ah_consensus.get("pct", 0) >= 60
+                    )
+                    ou_conf = self._ou_signal_rate(r) if is_ou_signal else None
+                    ou_ok = (not is_ou_signal) or bool(
+                        ou_conf
+                        and ou_conf.get("sample", 0) >= 20
+                        and ou_conf.get("rate", 0.0) >= 0.60
+                    )
                     strength_txt = f"{pin_prob*100:.1f}%" if pin_prob is not None else "无数据"
                     consensus_txt = (
                         f"{ah_consensus['same']}/{ah_consensus['n']}家 "
                         f"{ah_consensus['pct']}%"
                         if ah_consensus else "无数据"
                     )
-                    gate_text = (
-                        "临场推荐门槛:\n"
-                        f"- 15分钟复查一致: {'是' if consistency_ok else '否'}\n"
-                        f"- 平博强度: {strength_txt}（门槛60%）{' ✅' if strength_ok else ' ❌'}\n"
-                        f"- 亚盘平台共识: {consensus_txt}（门槛60%）{' ✅' if consensus_ok else ' ❌'}"
+                    ou_rate_txt = (
+                        f"{ou_conf['side']} {ou_conf['win']}/{ou_conf['win']+ou_conf['lose']} "
+                        f"{ou_conf['rate']*100:.1f}%（样本{ou_conf['sample']}场）"
+                        if ou_conf else "无数据"
                     )
+                    gate_lines = [
+                        "临场推荐门槛:",
+                        f"- 15分钟复查一致: {'是' if consistency_ok else '否'}",
+                    ]
+                    if is_ah_signal:
+                        gate_lines += [
+                            f"- 平博强度: {strength_txt}（门槛60%）{' ✅' if strength_ok else ' ❌'}",
+                            f"- 亚盘平台共识: {consensus_txt}（门槛60%）{' ✅' if consensus_ok else ' ❌'}",
+                        ]
+                    if is_ou_signal:
+                        gate_lines.append(
+                            f"- 大小球同类命中率: {ou_rate_txt}（门槛60%）{' ✅' if ou_ok else ' ❌'}"
+                        )
+                    gate_text = "\n".join(gate_lines)
                     ou_txt = self._ou_advice_text(r)
                     body = (
                         f"开赛时间: {ko}\n"
@@ -1807,10 +1861,12 @@ class ScannerApp(tk.Tk):
                     fail_reasons = []
                     if not consistency_ok:
                         fail_reasons.append("复查不一致")
-                    if not strength_ok:
+                    if is_ah_signal and not strength_ok:
                         fail_reasons.append("强度不足60%")
-                    if not consensus_ok:
+                    if is_ah_signal and not consensus_ok:
                         fail_reasons.append("平台共识不足60%")
+                    if is_ou_signal and not ou_ok:
+                        fail_reasons.append("大小球命中率不足60%")
                     send_ok = not fail_reasons
                     if send_ok and cfg.get("enabled") and all(
                         cfg.get(k) for k in ("sender", "auth", "to")
@@ -1884,7 +1940,7 @@ class ScannerApp(tk.Tk):
                             _rec = "不买"
                         _li["t15_rec"] = _rec
                         _li["t15_rec_line"] = _rec_line
-                        # 没有原始倾向的场次: 只要15分钟时是"升盘+升水"也发大小球建议
+                        # 非红色倾向只记录，不再发送邮件。
                         if not info.get("snapshot"):
                             _adv = self._ou_advice(r)
                             _advtxt = self._ou_advice_text(r)
@@ -1898,38 +1954,14 @@ class ScannerApp(tk.Tk):
                                     )
                                 )
                             elif _adv and (_adv.get("buy_small") or _adv.get("buy_big")) and _advtxt:
-                                _subj = (
-                                    f"大小球建议({PREMATCH_MIN}分钟): {info.get('league', '')} "
-                                    f"{info.get('home', '')} vs {info.get('away', '')}"
+                                self.events.put(
+                                    (
+                                        "log",
+                                        "仅记录非红色大小球建议，不发送邮件: "
+                                        f"{info.get('league', '')} "
+                                        f"{info.get('home', '')} vs {info.get('away', '')}",
+                                    )
                                 )
-                                _body = (
-                                    f"开赛时间: {ko}\n"
-                                    f"联赛: {info.get('league', '')}\n"
-                                    f"主队: {info.get('home', '')}\n"
-                                    f"客队: {info.get('away', '')}\n"
-                                    f"{_advtxt}"
-                                    f"{MAIL_DISCLAIMER}\n"
-                                )
-                                _cfg = self.mail_cfg
-                                if _cfg.get("enabled") and all(
-                                    _cfg.get(k) for k in ("sender", "auth", "to")
-                                ):
-                                    threading.Thread(
-                                        target=self._mail_worker,
-                                        args=(_cfg, _subj, _body),
-                                        daemon=True,
-                                    ).start()
-                                _ol = [
-                                    f"🔔 大小球建议({PREMATCH_MIN}分钟) 已发邮件: "
-                                    f"{info.get('league', '')} "
-                                    f"{info.get('home', '')} vs {info.get('away', '')}  "
-                                    f"开赛 {ko}",
-                                ]
-                                for _ln in (_advtxt or "").strip().splitlines():
-                                    if _ln.strip():
-                                        _ol.append("    " + _ln.strip())
-                                _ol.append(f"    {MAIL_DISCLAIMER}")
-                                self.events.put(("log", "\n".join(_ol)))
                 except Exception:
                     pass
             end = time.time() + 30
@@ -2586,7 +2618,7 @@ class ScannerApp(tk.Tk):
         self._send_daily_digest(day, tag="手动")
 
     def _send_daily_digest(self, day, tag="21:00", reason=""):
-        rows = [r for r in self.all_rows if "倾向" in sc.bet_cell(r)]
+        rows = [r for r in self.all_rows if self._email_eligible_row(r)]
         rows.sort(
             key=lambda r: (
                 r.get("kickoff") or "9999-99-99 99:99",
