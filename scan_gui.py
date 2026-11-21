@@ -2102,7 +2102,7 @@ class ScannerApp(tk.Tk):
             return None
         import shutil as _shutil
 
-        bdir = os.path.join(app_dir(), "backups")
+        bdir = self._backup_dir()
         os.makedirs(bdir, exist_ok=True)
         dst = os.path.join(
             bdir, f"track_history_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
@@ -2114,6 +2114,19 @@ class ScannerApp(tk.Tk):
         except Exception as e:
             self._append_log(f"历史备份失败: {e}")
             return None
+
+    def _backup_dir(self):
+        """备份优先放大容量数据盘，避免持续占用C盘。"""
+        for drive in ("E:", "F:", "D:"):
+            if not os.path.isdir(drive + "\\"):
+                continue
+            path = os.path.join(drive + "\\", "足球500数据抓包", "backups")
+            try:
+                os.makedirs(path, exist_ok=True)
+                return path
+            except OSError:
+                continue
+        return os.path.join(app_dir(), "backups")
 
     def _delete_all(self):
         if not self.all_rows:
