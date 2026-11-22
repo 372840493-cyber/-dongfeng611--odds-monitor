@@ -74,24 +74,23 @@ def is_blocked_league(name):
     return any(key in name for key in BLOCKED_LEAGUE_KEYS)
 
 
-def select_scan_window(matches, hours=3, min_count=5):
-    """只保留临近开赛的比赛，避免一次扫描未来 24 小时数百场。"""
+def select_scan_window(matches, hours=24):
+    """保留未来指定小时内的比赛，默认完整覆盖未来24小时。"""
     now = datetime.now()
-    for use_hours in (hours, 6):
-        cutoff = now + timedelta(hours=use_hours)
-        selected = []
-        for m in matches:
-            try:
-                ko = datetime.strptime(str(m.get("kickoff") or ""), "%Y-%m-%d %H:%M")
-            except (TypeError, ValueError):
-                selected.append(m)
-                continue
-            if ko >= now - timedelta(minutes=10) and ko <= cutoff:
-                selected.append(m)
-        if len(selected) >= min_count or use_hours == 6:
-            selected.sort(key=lambda m: (str(m.get("kickoff") or "9999"), str(m.get("league") or "")))
-            return selected, use_hours
-    return matches, hours
+    cutoff = now + timedelta(hours=hours)
+    selected = []
+    for m in matches:
+        try:
+            ko = datetime.strptime(str(m.get("kickoff") or ""), "%Y-%m-%d %H:%M")
+        except (TypeError, ValueError):
+            selected.append(m)
+            continue
+        if ko >= now - timedelta(minutes=10) and ko <= cutoff:
+            selected.append(m)
+    selected.sort(
+        key=lambda m: (str(m.get("kickoff") or "9999"), str(m.get("league") or ""))
+    )
+    return selected, hours
 
 
 class ScannerApp(tk.Tk):
