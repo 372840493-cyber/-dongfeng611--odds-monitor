@@ -93,6 +93,11 @@ def select_scan_window(matches, hours=24):
     return selected, hours
 
 
+def is_proxy_auth_error(error):
+    text = str(error or "").lower()
+    return "407" in text or "proxy authentication required" in text
+
+
 class ScannerApp(tk.Tk):
     COLS = [
         ("league", "联赛", 58),
@@ -1368,6 +1373,7 @@ class ScannerApp(tk.Tk):
             self._render(self.all_rows, set())
             self._save_history()
         self._set_auto_resume_scan(True)
+        self._proxy_auth_failed = False
         self.running = True
         self.stop_ev.clear()
         self.alerted.clear()
@@ -1507,14 +1513,26 @@ class ScannerApp(tk.Tk):
                     )
                 if r.get("error"):
                     counters["err"] += 1
+                    error_text = str(r.get("error") or "")
                     self.events.put(
                         (
                             "log",
                             "拉盘失败: "
                             f"{r.get('league', '')} {r.get('home', '')} vs "
-                            f"{r.get('away', '')} → {str(r.get('error'))[:100]}",
+                            f"{r.get('away', '')} → {error_text[:100]}",
                         )
                     )
+                    if is_proxy_auth_error(error_text):
+                        self._proxy_auth_failed = True
+                        self._round_abort.set()
+                        self.events.put(
+                            (
+                                "log",
+                                "快代理订单已到期或认证失败(407)，已停止本轮。"
+                                "请在快代理续费或更新账号后重新开始扫描。",
+                            )
+                        )
+                        return
                     if (
                         counters["ok"] == 0
                         and counters["err"] >= self._round_abort_after
@@ -1577,6 +1595,11 @@ class ScannerApp(tk.Tk):
                 ),
             )
             if not self.running:
+                self.events.put(("stopped", None))
+                return
+            if getattr(self, "_proxy_auth_failed", False):
+                self.running = False
+                self.stop_ev.set()
                 self.events.put(("stopped", None))
                 return
             for r in results:
